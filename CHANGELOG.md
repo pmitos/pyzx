@@ -8,6 +8,9 @@ Hence, occasionally changes will be backwards incompatible (although they will a
 
 ## [Unreleased]
 
+### Added
+- Cubic flow finding for XY, X, and Y measurements, with the previous finder available as `method="legacy"`.
+
 ### Fixed
 - Pauli-flow finder now correctly accounts for Pauli-Y vertices in correction sets.
 
