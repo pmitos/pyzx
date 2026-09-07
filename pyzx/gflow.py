@@ -15,7 +15,7 @@
 # limitations under the License.
 
 from fractions import Fraction
-from typing import Dict, Set, Tuple, Optional
+from typing import Dict, Set, Tuple, Optional, Iterator
 
 from .linalg import Mat2
 from .graph.base import BaseGraph, VT, ET
@@ -35,22 +35,21 @@ def gflow(
     :param method: ``cubic`` (default) or the retained ``legacy`` finder.
 
     The cubic method returns focused corrections even when ``focus=False``.
-    With grounds, that mode imposes constraints only on ungrounded non-outputs,
-    matching the legacy convention. Corrections and layer numbers need not be
-    identical between methods. Ordinary order runs from smaller to larger
+    In that mode grounds are treated as outputs. With ``focus=True`` and
+    non-output grounds, the legacy finder preserves PyZX's ground constraints.
+    Corrections and layer numbers need not be identical between methods.
+    Ordinary order runs from smaller to larger
     layer numbers; ``reverse=True`` returns the opposite numbering convention.
 
-    This specializes the flow-demand/order-demand formulation of Mitosek and
-    Backens (https://arxiv.org/abs/2410.23439). Here M is adjacency with a Y
-    diagonal, and N selects only XY correction coordinates. Thus outputs,
-    grounds and Pauli vertices supply correction columns immediately, while
-    an XY column becomes available after its vertex is solved.
-
-    Maintain one column basis of M and residuals for all unit right-hand sides.
-    Each column is inserted once and each new pivot updates every unsolved RHS
-    once. There are O(n^2) packed-vector operations on O(n)-bit integers, giving
-    O(n^3) bit operations and O(n^2) bits of storage. This is an incremental
-    column-basis specialization, not the general M/N kernel implementation.
+    This ports mbqcflow's Mitosek--Backens right-inverse/kernel algorithm
+    (https://arxiv.org/abs/2410.23439), restricted to XY, X and Y. M is the
+    flow-demand matrix (adjacency with a Y diagonal); N selects XY correction
+    coordinates. For square M, compute C = M^-1 and check that NC is a DAG.
+    Otherwise compute a right inverse C0 and kernel basis K, then find P with
+    N(C0 + KP) acyclic using the maintained system [NK | NC0 | I].
+    Packed Python integers give O(n^3) bit operations and O(n^2) bits of storage
+    without new dependencies. The focused-ground fallback retains legacy
+    complexity.
     """
     if method == "legacy":
         return _gflow_legacy(g, focus=focus, reverse=reverse, pauli=pauli)
@@ -64,6 +63,10 @@ def gflow(
     if reverse:
         inputs, outputs = outputs, inputs
     processed = outputs | (g.grounds() & vertex_set)
+    if focus and processed != outputs:
+        # Grounds have homogeneous demand constraints but no unit RHS of their
+        # own. This is not the MC = I problem solved by mbqcflow's algorithm.
+        return _gflow_legacy(g, focus=focus, reverse=reverse, pauli=pauli)
     paulis = set()
     ys = set()
     if pauli:
@@ -75,70 +78,228 @@ def gflow(
                 paulis.add(v)
                 ys.add(v)
 
-    rows = [v for v in vertices if v not in (outputs if focus else processed)]
-    row_index = {v: i for i, v in enumerate(rows)}
+    rows = [v for v in vertices if v not in processed]
     columns = [v for v in vertices if v not in inputs]
     column_index = {v: j for j, v in enumerate(columns)}
     demand = []
-    for v in columns:
+    for v in rows:
         bits = 0
         for w in g.neighbors(v):
-            if w in row_index:
-                bits |= 1 << row_index[w]
-        if v in ys and v in row_index:
-            bits |= 1 << row_index[v]
+            if w in column_index:
+                bits |= 1 << column_index[w]
+        if v in ys and v in column_index:
+            bits |= 1 << column_index[v]
         demand.append(bits)
-
-    residual = [1 << i for i in range(len(rows))]
-    solutions = [0] * len(rows)
-    active = [i for i, v in enumerate(rows) if v not in processed]
-    # Each entry is (pivot bit, transformed M column, correction coordinates).
-    # Later basis vectors have zero entries at every earlier pivot.
-    basis: list[tuple[int, int, int]] = []
-    pending = [column_index[v] for v in columns if v in processed or v in paulis]
-    inserted = set(pending)
+    # N has at most one entry per row for PyZX's XY/X/Y measurements.
+    order_columns = [column_index.get(v, -1) if v not in paulis else -1 for v in rows]
+    result = _dag_right_inverse(demand, order_columns, len(columns))
+    if result is None:
+        return None
+    correction_matrix, batches = result
     layers = {v: 0 for v in processed}
-    corrections: Dict[VT, Set[VT]] = {}
-    depth = 0
-    while active:
-        for j in pending:
-            vector, combination = demand[j], 1 << j
-            for pivot, column, coordinates in basis:
-                if vector & pivot:
-                    vector ^= column
-                    combination ^= coordinates
-            if not vector:
-                continue
-            pivot = vector & -vector
-            basis.append((pivot, vector, combination))
-            for i in active:
-                if residual[i] & pivot:
-                    residual[i] ^= vector
-                    solutions[i] ^= combination
-
-        solved = [i for i in active if not residual[i]]
-        if not solved:
-            return None
-        depth += 1
-        pending = []
-        for i in solved:
-            v = rows[i]
-            layers[v] = depth
-            correction = set()
-            bits = solutions[i]
-            while bits:
-                bit = bits & -bits
-                correction.add(columns[bit.bit_length() - 1])
-                bits ^= bit
-            corrections[v] = correction
-            if v in column_index and column_index[v] not in inserted:
-                j = column_index[v]
-                inserted.add(j)
-                pending.append(j)
-        active = [i for i in active if residual[i]]
-
+    for depth, batch in enumerate(batches, 1):
+        for i in batch:
+            layers[rows[i]] = depth
+    corrections: Dict[VT, Set[VT]] = {v: set() for v in rows}
+    for j, bits in enumerate(correction_matrix):
+        for i in _set_bits(bits):
+            corrections[rows[i]].add(columns[j])
+    depth = len(batches)
     return ({v: layer if reverse else depth - layer for v, layer in layers.items()},
             corrections)
+
+
+def _set_bits(bits: int) -> Iterator[int]:
+    """Yield the indices of nonzero entries in a packed binary row."""
+    while bits:
+        bit = bits & -bits
+        yield bit.bit_length() - 1
+        bits ^= bit
+
+
+def _right_inverse(
+    matrix: list[int], column_count: int
+) -> Optional[Tuple[list[int], list[int], list[int]]]:
+    """Reduce [M | I], returning C0, reduced rows and pivot columns.
+
+    Free variables of C0 are zero. Retain the reduction so the rectangular
+    path can construct ker(M) without another elimination.
+    """
+    row_count = len(matrix)
+    if row_count > column_count:
+        return None
+    reduced = [row | (1 << (column_count + i)) for i, row in enumerate(matrix)]
+    pivots: list[int] = []
+    for j in range(column_count):
+        rank = len(pivots)
+        pivot = next((i for i in range(rank, row_count) if reduced[i] & (1 << j)), None)
+        if pivot is None:
+            continue
+        reduced[rank], reduced[pivot] = reduced[pivot], reduced[rank]
+        for i in range(row_count):
+            if i != rank and reduced[i] & (1 << j):
+                reduced[i] ^= reduced[rank]
+        pivots.append(j)
+        if len(pivots) == row_count:
+            break
+    if len(pivots) != row_count:
+        return None
+    correction = [0] * column_count
+    for i, j in enumerate(pivots):
+        correction[j] = reduced[i] >> column_count
+    return correction, reduced, pivots
+
+
+def _kernel_basis(reduced: list[int], pivots: list[int], column_count: int) -> list[int]:
+    """Return packed rows of a kernel basis from the reduction of [M | I]."""
+    pivot_set = set(pivots)
+    free = [j for j in range(column_count) if j not in pivot_set]
+    kernel = [0] * column_count
+    for k, j in enumerate(free):
+        kernel[j] = 1 << k
+        for i, pivot in enumerate(pivots):
+            if reduced[i] & (1 << j):
+                kernel[pivot] |= 1 << k
+    return kernel
+
+
+def _dag_right_inverse(
+    demand: list[int], order_columns: list[int], column_count: int
+) -> Optional[Tuple[list[int], list[list[int]]]]:
+    """Find MC=I with NC acyclic, using mbqcflow's square/general split.
+
+    N is represented by its selected column in each row, or -1 for a zero row.
+    All other matrices are lists of packed binary rows.
+    """
+    inverse = _right_inverse(demand, column_count)
+    if inverse is None:
+        return None
+    correction, reduced, pivots = inverse
+    row_count = len(demand)
+    if row_count != column_count:
+        kernel = _kernel_basis(reduced, pivots, column_count)
+        left = [kernel[j] if j >= 0 else 0 for j in order_columns]
+        middle = [correction[j] if j >= 0 else 0 for j in order_columns]
+        adjustment = _find_kernel_adjustment(left, middle, column_count - row_count)
+        if adjustment is None:
+            return None
+        # C = C0 + KP over GF(2).
+        for j, row in enumerate(kernel):
+            for k in _set_bits(row):
+                correction[j] ^= adjustment[k]
+    # In particular, square M never constructs a kernel or solves for P.
+    order_product = [correction[j] if j >= 0 else 0 for j in order_columns]
+    layers = _dag_layers(order_product)
+    return None if layers is None else (correction, layers)
+
+
+def _find_kernel_adjustment(left: list[int], middle: list[int], k: int) -> Optional[list[int]]:
+    """Find P with B+AP acyclic via mbqcflow's maintained [A | B | I].
+
+    Here A=NK and B=NC0. After a batch is solved, remove its original row
+    constraints using the identity block, and restore echelon order by updating
+    one row per removed constraint. Do not re-eliminate the full system.
+    """
+    n = len(left)
+    coefficient_mask = (1 << k) - 1
+    rhs_mask = (1 << n) - 1
+    invariant = [a | (b << k) | (1 << (k + n + i))
+                 for i, (a, b) in enumerate(zip(left, middle))]
+    system = invariant.copy()
+    rank = 0
+    for j in range(k):
+        pivot = next((i for i in range(rank, n) if system[i] & (1 << j)), None)
+        if pivot is None:
+            continue
+        system[rank], system[pivot] = system[pivot], system[rank]
+        for i in range(rank + 1, n):
+            if system[i] & (1 << j):
+                system[i] ^= system[rank]
+        rank += 1
+
+    adjustment = [0] * k
+    remaining = rhs_mask
+    while remaining:
+        blocked = 0
+        pivot_rows = []
+        for row in system:
+            coefficients = row & coefficient_mask
+            if coefficients:
+                pivot_rows.append((coefficients & -coefficients, coefficients, row >> k))
+            else:
+                blocked |= (row >> k) & rhs_mask
+        solvable = remaining & ~blocked
+        if not solvable:
+            return None
+        for i in _set_bits(solvable):
+            # At most k packed parity evaluations per target; each target is
+            # solved once, regardless of the number of solver layers.
+            solution = 0
+            for pivot_bit, coefficients, rhs in reversed(pivot_rows):
+                if ((rhs >> i) & 1) ^ ((coefficients & solution).bit_count() & 1):
+                    solution |= pivot_bit
+            for j in _set_bits(solution):
+                adjustment[j] |= 1 << i
+        for i in _set_bits(solvable):
+            flag = 1 << (k + n + i)
+            users = [j for j, row in enumerate(system) if row & flag]
+            if not users:
+                continue
+            replacement = users[-1]
+            for j in users[:-1]:
+                system[j] ^= system[replacement]
+            system[replacement] ^= invariant[i]
+            _restore_echelon(system, replacement, coefficient_mask)
+        remaining ^= solvable
+    return adjustment
+
+
+def _restore_echelon(system: list[int], changed: int, coefficient_mask: int) -> None:
+    """Restore echelon order after one constraint-removal row update."""
+    row = system.pop(changed)
+    for other in system:
+        coefficients = other & coefficient_mask
+        if not coefficients:
+            break
+        if row & (coefficients & -coefficients):
+            row ^= other
+    coefficients = row & coefficient_mask
+    pivot = coefficients & -coefficients
+    target = 0
+    for other in system:
+        other_coefficients = other & coefficient_mask
+        if not other_coefficients:
+            break
+        if pivot and (other_coefficients & -other_coefficients) > pivot:
+            break
+        target += 1
+    system.insert(target, row)
+
+
+def _dag_layers(matrix: list[int]) -> Optional[list[list[int]]]:
+    """Return sink-first batches of the column-to-row relation, or None.
+
+    Count every edge once on insertion and once on removal, including diagonal
+    entries (which must cause failure). There are O(n^2) edge visits.
+    """
+    outgoing = [0] * len(matrix)
+    for row in matrix:
+        for source in _set_bits(row):
+            outgoing[source] += 1
+    batch = [i for i, degree in enumerate(outgoing) if degree == 0]
+    layers = []
+    count = 0
+    while batch:
+        layers.append(batch)
+        count += len(batch)
+        following = []
+        for target in batch:
+            for source in _set_bits(matrix[target]):
+                outgoing[source] -= 1
+                if outgoing[source] == 0:
+                    following.append(source)
+        batch = following
+    return layers if count == len(matrix) else None
 
 
 def _gflow_legacy(

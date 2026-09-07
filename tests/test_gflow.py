@@ -21,7 +21,9 @@ from itertools import combinations, permutations, product
 from unittest.mock import patch
 
 from pyzx.circuit import Circuit
-from pyzx.gflow import gflow
+from pyzx.gflow import (
+    gflow, _right_inverse, _kernel_basis, _find_kernel_adjustment, _dag_layers,
+)
 from pyzx.graph import Graph
 from pyzx.pauliweb import compute_pauli_webs
 from pyzx.utils import EdgeType, VertexType
@@ -203,8 +205,8 @@ class TestGFlow(unittest.TestCase):
             with self.subTest(column_order=column_order):
                 self.assert_valid_flow(graph, gflow(graph), False, False, False)
 
-    def test_dense_rectangular_system_across_packed_word_boundaries(self):
-        """Dense corrections must retain coordinates beyond machine-word widths."""
+    def assert_dense_system(self, extra_outputs):
+        """Check the same full-rank block with square or rectangular demand."""
         rng = random.Random(67)
         n = 67
         rows = [{i} for i in range(n)]
@@ -214,13 +216,69 @@ class TestGFlow(unittest.TestCase):
             rows[i] ^= rows[j]
         edges = [(i, n + j) for i, row in enumerate(rows) for j in row]
         # Surplus outputs include a duplicate column and an isolated zero column.
-        edges.extend((i, 2 * n) for i, row in enumerate(rows) if 0 in row)
-        graph, vertices = open_graph([Fraction(1, 4)] * (2 * n + 2), edges,
-                                    inputs=range(n), outputs=range(n, 2 * n + 2))
-        result = gflow(graph)
+        if extra_outputs:
+            edges.extend((i, 2 * n) for i, row in enumerate(rows) if 0 in row)
+        graph, vertices = open_graph([Fraction(1, 4)] * (2 * n + extra_outputs), edges,
+                                    inputs=range(n), outputs=range(n, 2 * n + extra_outputs))
+        self.assertEqual(len(graph.inputs()), n)
+        self.assertEqual(len(graph.outputs()), n + extra_outputs)
+        for focus, pauli in product((False, True), repeat=2):
+            with self.subTest(focus=focus, pauli=pauli, extra_outputs=extra_outputs):
+                result = gflow(graph, focus=focus, pauli=pauli)
+                self.assert_valid_flow(graph, result, pauli, False, focus)
+                if result is not None:
+                    self.assertTrue(any(vertices[2 * n - 1] in c for c in result[1].values()))
+
+    def test_equal_io_dense_square_system(self):
+        """Equal I/O gives a full-rank 67-by-67 demand and unique corrections."""
+        with patch('pyzx.gflow._kernel_basis', side_effect=AssertionError('Square kernel')):
+            with patch('pyzx.gflow._find_kernel_adjustment',
+                       side_effect=AssertionError('Square adjustment')):
+                self.assert_dense_system(extra_outputs=0)
+
+    def test_unequal_io_dense_rectangular_system(self):
+        """More outputs give a 67-by-69 demand, including dependent/zero columns."""
+        with patch('pyzx.gflow._find_kernel_adjustment',
+                   wraps=_find_kernel_adjustment) as adjustment:
+            self.assert_dense_system(extra_outputs=2)
+            self.assertEqual(adjustment.call_count, 4)
+
+    def test_rectangular_kernel_adjustment_removes_cycle(self):
+        """C0 has a cycle; a nonzero KP is necessary to find the flow."""
+        graph, vertices = open_graph([Fraction(1, 4)] * 3,
+                                    [(0, 1), (0, 2)], outputs=[2])
+        # M=[011;100], in column-index order. C0=[01;10;00],
+        # K=[0;1;1], N selects coordinates 0 and 1. Thus NC0 is a
+        # two-cycle, and P=[1,0] cancels its row-1, column-0 entry.
+        with patch('pyzx.gflow._find_kernel_adjustment',
+                   wraps=_find_kernel_adjustment) as adjustment:
+            result = gflow(graph)
+            adjustment.assert_called_once_with([0, 1], [2, 1], 1)
+        self.assertEqual(_find_kernel_adjustment([0, 1], [2, 1], 1), [1])
         self.assert_valid_flow(graph, result, False, False, False)
         if result is not None:
-            self.assertTrue(any(vertices[2 * n - 1] in c for c in result[1].values()))
+            self.assertEqual(result[1], {vertices[0]: {vertices[2]}, vertices[1]: {vertices[0]}})
+
+    def test_unequal_io_rank_deficient_system(self):
+        """Extra outputs alone do not ensure the existence of a right inverse."""
+        graph, _ = open_graph([Fraction(1, 4)] * 5, [(0, 2), (1, 2)],
+                              inputs=[0, 1], outputs=[2, 3, 4])
+        for focus in (False, True):
+            self.assertIsNone(gflow(graph, focus=focus))
+
+    def test_rectangular_wide_kernel_and_multiple_layers(self):
+        """67 disjoint chains exercise a wide kernel and repeated row removals."""
+        chains = 67
+        edges = [(5 * j + i, 5 * j + i + 1) for j in range(chains) for i in range(4)]
+        graph, _ = open_graph([Fraction(1, 4)] * (5 * chains), edges,
+                              outputs=[5 * j + 4 for j in range(chains)])
+        with patch('pyzx.gflow._find_kernel_adjustment',
+                   wraps=_find_kernel_adjustment) as adjustment:
+            result = gflow(graph)
+            self.assertEqual(adjustment.call_args.args[2], chains)
+        self.assert_valid_flow(graph, result, False, False, False)
+        if result is not None:
+            self.assertEqual(set(result[0].values()), set(range(5)))
 
     def test_pauli_vertices_remove_order_obstruction(self):
         """X correctors can be used before they are processed, including mutually."""
@@ -259,7 +317,8 @@ class TestGFlow(unittest.TestCase):
                                     inputs=[0], outputs=[2])
         graph.set_ground(vertices[1])
         self.assert_valid_flow(graph, gflow(graph, focus=False), False, False, False)
-        self.assertIsNone(gflow(graph, focus=True))
+        with patch('pyzx.gflow._right_inverse', side_effect=AssertionError('Ground inverse')):
+            self.assertIsNone(gflow(graph, focus=True))
 
     def test_only_outputs_and_boundary_wire(self):
         """No measurements requires no corrections, even with overlapping I/O."""
@@ -271,6 +330,16 @@ class TestGFlow(unittest.TestCase):
         graph.set_inputs((a,))
         graph.set_outputs((b,))
         self.assertEqual(gflow(graph), ({}, {}))
+
+    def test_focused_ground_does_not_require_its_own_right_inverse_column(self):
+        """An isolated ground gives a zero M row but no unsatisfiable unit RHS."""
+        graph, vertices = open_graph([Fraction(1, 4)] * 3, [(0, 2)],
+                                    inputs=[0], outputs=[2])
+        graph.set_ground(vertices[1])
+        result = gflow(graph, focus=True)
+        self.assert_valid_flow(graph, result, False, False, True)
+        if result is not None:
+            self.assertEqual(result[1], {vertices[0]: {vertices[2]}})
 
     def test_reverse_matches_swapped_boundaries(self):
         """Reverse swaps input/output roles and reverses layer numbering."""
@@ -377,7 +446,7 @@ class TestGFlow(unittest.TestCase):
             self.assert_valid_flow(graph, result, False, False, focus)
 
     def test_long_chain(self):
-        """Columns unlocked in successive layers retain earlier constraints."""
+        """The square inverse has a valid dependency chain across 129 layers."""
         graph = Graph()
         vertices = [graph.add_vertex(VertexType.Z, phase=Fraction(1, 4))
                     for _ in range(130)]
@@ -425,6 +494,82 @@ class TestGFlow(unittest.TestCase):
                 _, corrections = result
                 self.assertEqual(corrections[xy], {output})
                 self.assertEqual(corrections[y], {output, y})
+
+
+class TestFlowMatrices(unittest.TestCase):
+    """Check the port's algebra separately from graph-to-matrix conversion."""
+
+    def test_right_inverse_and_kernel_identities(self):
+        """MC0=I and MK=0, including empty and permuted rectangular systems."""
+        rng = random.Random(2410)
+        for n in range(9):
+            for extra in range(4):
+                c = n + extra
+                columns = list(range(c))
+                rng.shuffle(columns)
+                rows = [(1 << i) | (rng.getrandbits(extra) << n) for i in range(n)]
+                if n > 1:
+                    for _ in range(5 * n):
+                        i, j = rng.sample(range(n), 2)
+                        rows[i] ^= rows[j]
+                rows = [sum(((row >> j) & 1) << columns[j] for j in range(c)) for row in rows]
+                inverse = _right_inverse(rows, c)
+                self.assertIsNotNone(inverse)
+                if inverse is None:
+                    continue
+                correction, reduced, pivots = inverse
+                kernel = _kernel_basis(reduced, pivots, c)
+                free = [j for j in range(c) if j not in pivots]
+                self.assertEqual([kernel[j] for j in free], [1 << j for j in range(extra)])
+                for i, row in enumerate(rows):
+                    mc, mk = 0, 0
+                    for j in range(c):
+                        if (row >> j) & 1:
+                            mc ^= correction[j]
+                            mk ^= kernel[j]
+                    self.assertEqual(mc, 1 << i)
+                    self.assertEqual(mk, 0)
+        self.assertIsNone(_right_inverse([1, 1], 2))
+        self.assertIsNone(_right_inverse([1, 1], 1))
+
+    def test_kernel_adjustment_against_total_orders(self):
+        """Enumerate parameter columns and orders without echelon maintenance."""
+        rng = random.Random(23439)
+        for sample in range(200):
+            n, k = rng.randrange(1, 5), rng.randrange(4)
+            left = [rng.getrandbits(k) for _ in range(n)]
+            middle = [rng.getrandbits(n) for _ in range(n)]
+            # For an earliest-to-latest order, column u must vanish on
+            # every row at or before u. Enumerate all possible p_u directly.
+            expected = False
+            for order in permutations(range(n)):
+                if all(any(all(((middle[v] >> u) & 1) == ((left[v] & p).bit_count() & 1)
+                               for v in order[:pos + 1])
+                           for p in range(1 << k))
+                       for pos, u in enumerate(order)):
+                    expected = True
+                    break
+            adjustment = _find_kernel_adjustment(left, middle, k)
+            with self.subTest(sample=sample, n=n, k=k):
+                self.assertEqual(adjustment is not None, expected)
+                if adjustment is None:
+                    continue
+                final = middle.copy()
+                for v in range(n):
+                    for j in range(k):
+                        if (left[v] >> j) & 1:
+                            final[v] ^= adjustment[j]
+                self.assertTrue(any(all(not ((final[v] >> u) & 1)
+                                        for pos, u in enumerate(order) for v in order[:pos + 1])
+                                    for order in permutations(range(n))))
+
+    def test_dag_direction_and_diagonal(self):
+        """Column-to-row dependencies give sink-first layers; loops are cycles."""
+        self.assertEqual(_dag_layers([]), [])
+        self.assertEqual(_dag_layers([0, 1, 2]), [[2], [1], [0]])
+        self.assertEqual(_dag_layers([0, 0]), [[0, 1]])
+        self.assertIsNone(_dag_layers([1]))
+        self.assertIsNone(_dag_layers([2, 1]))
 
 
 if __name__ == '__main__':
