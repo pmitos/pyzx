@@ -59,9 +59,22 @@ entries in the worst case.
 Local verification, 7 September 2026
 -----------------------------------
 
-* 527 unit tests run, 13 skipped, no failures; mypy checks 150 source files.
+* 540 unit tests run, 13 skipped, no failures; mypy checks 150 source files.
+* Exhaustive enumeration of correction subsets and measurement orders checks
+  all 4,233 combinations of simple graph, inputs, outputs and XY/X/Y labels
+  through three vertices, including overlapping inputs and outputs. It uses
+  the Pauli-flow conditions directly, independently of focusing or elimination.
+  Both focus modes are checked, as is ordinary gflow on all-XY cases.
 * 1,280 seeded graph/mode combinations agree with legacy on existence;
   returned cubic witnesses are independently checked for parity and order.
+* Explicit cases cover rank and order obstructions, zero/dependent columns,
+  non-monotone pivot arrival, a dense rectangular system beyond 64-bit width,
+  130 successive layers, phase periodicity, input exclusion, disconnected
+  components, grounds, boundary-only diagrams, reverse numbering, X spiders,
+  noncontiguous vertex IDs, both simple and multigraph backends, deterministic
+  repeat calls and absence of input mutation.
+* A unit test checks the actual flow witness used by ``compute_pauli_webs``
+  in both directions on a circuit containing Clifford and non-Clifford gates.
 * 2,000 gflow and 2,000 XY/X/Y Pauli-flow instances agree with mbqcflow.
 * 48 direct Pauli-web calls succeed: 12 reduced circuits, both directions,
   both finders. This smoke check does not assert identical Pauli webs.
