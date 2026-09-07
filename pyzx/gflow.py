@@ -26,36 +26,133 @@ def gflow(
     g: BaseGraph[VT, ET], focus: bool=False, reverse: bool=False, pauli: bool=False,
     *, method: str="cubic"
 ) -> Optional[Tuple[Dict[VT, int], Dict[VT, Set[VT]]]]:
-    r"""Find gflow or Pauli flow for {XY, X, Y} measurements.
+    r"""Find gflow or Pauli flow for XY/X/Y measurements.
 
     :param g: A graph-like ZX diagram.
     :param focus: Require focused corrections, including constraints on grounds.
     :param reverse: Reverse the roles of inputs and outputs.
     :param pauli: Interpret Pauli phases as X or Y measurements.
-    :param method: ``cubic`` (default) or the retained ``legacy`` finder.
+    :param method: Incremental ``cubic`` (default) or retained ``legacy`` finder.
 
     The cubic method returns focused corrections even when ``focus=False``.
-    In that mode grounds are treated as outputs. With ``focus=True`` and
-    non-output grounds, the legacy finder preserves PyZX's ground constraints.
-    Corrections and layer numbers need not be identical between methods.
-    Ordinary order runs from smaller to larger
-    layer numbers; ``reverse=True`` returns the opposite numbering convention.
+    That mode omits ground rows; ``focus=True`` keeps their homogeneous
+    constraints. Corrections and layers can differ between methods. Ordinary
+    order runs from smaller to larger layers; reverse mode inverts numbering.
 
-    This ports mbqcflow's Mitosek--Backens right-inverse/kernel algorithm
-    (https://arxiv.org/abs/2410.23439), restricted to XY, X and Y. M is the
-    flow-demand matrix (adjacency with a Y diagonal); N selects XY correction
-    coordinates. For square M, compute C = M^-1 and check that NC is a DAG.
-    Otherwise compute a right inverse C0 and kernel basis K, then find P with
-    N(C0 + KP) acyclic using the maintained system [NK | NC0 | I].
-    Packed Python integers give O(n^3) bit operations and O(n^2) bits of storage
-    without new dependencies. The focused-ground fallback retains legacy
-    complexity.
+    For XY/X/Y, the Mitosek--Backens order-demand matrix N consists only of
+    zero rows and an identity subblock. Order constraints therefore just
+    forbid individual unprocessed XY correction coordinates. This permits
+    incremental column elimination without constructing a global right inverse,
+    kernel basis or kernel-adjustment system. General XZ/YZ order demands
+    cannot be handled by this simple column-availability rule.
+
+    Each candidate column is inserted at most once; each new pivot updates
+    each unsolved RHS at most once. Packed integer vectors give O(n^3) bit
+    work and O(n^2) matrix bits. See https://arxiv.org/abs/2410.23439 for M/N.
     """
     if method == "legacy":
         return _gflow_legacy(g, focus=focus, reverse=reverse, pauli=pauli)
     if method != "cubic":
         raise ValueError("Unknown flow method: " + method)
 
+    vertices = [v for v in g.vertices() if vertex_is_zx(g.type(v))]
+    vertex_set = set(vertices)
+    inputs = {v for b in g.inputs() for v in g.neighbors(b) if v in vertex_set}
+    outputs = {v for b in g.outputs() for v in g.neighbors(b) if v in vertex_set}
+    if reverse:
+        inputs, outputs = outputs, inputs
+    processed = outputs | (g.grounds() & vertex_set)
+    paulis = set()
+    ys = set()
+    if pauli:
+        for v in vertices:
+            phase = g.phase(v) % 2
+            if phase_is_pauli(phase):
+                paulis.add(v)
+            elif phase_is_clifford(phase):
+                paulis.add(v)
+                ys.add(v)
+
+    rows = [v for v in vertices if v not in (outputs if focus else processed)]
+    row_index = {v: i for i, v in enumerate(rows)}
+    columns = [v for v in vertices if v not in inputs]
+    column_index = {v: j for j, v in enumerate(columns)}
+    demand = []
+    for v in columns:
+        bits = 0
+        for w in g.neighbors(v):
+            if w in row_index:
+                bits |= 1 << row_index[w]
+        if v in ys and v in row_index:
+            bits |= 1 << row_index[v]
+        demand.append(bits)
+
+    residual = [1 << i for i in range(len(rows))]
+    solutions = [0] * len(rows)
+    active = [i for i, v in enumerate(rows) if v not in processed]
+    # Each entry is (pivot bit, transformed M column, correction coordinates).
+    # Later basis vectors have zero entries at every earlier pivot.
+    basis: list[tuple[int, int, int]] = []
+    # N only selects XY coordinates: outputs and X/Y correctors are available
+    # now; each non-input XY column is added after its vertex is processed.
+    # Keep every demand row, including already solved ones, to retain focusing.
+    pending = [column_index[v] for v in columns if v in processed or v in paulis]
+    inserted = set(pending)
+    layers = {v: 0 for v in processed}
+    corrections: Dict[VT, Set[VT]] = {}
+    depth = 0
+    while active:
+        for j in pending:
+            vector, combination = demand[j], 1 << j
+            for pivot, column, coordinates in basis:
+                if vector & pivot:
+                    vector ^= column
+                    combination ^= coordinates
+            if not vector:
+                continue
+            pivot = vector & -vector
+            basis.append((pivot, vector, combination))
+            for i in active:
+                if residual[i] & pivot:
+                    residual[i] ^= vector
+                    solutions[i] ^= combination
+
+        solved = [i for i in active if not residual[i]]
+        if not solved:
+            return None
+        depth += 1
+        pending = []
+        for i in solved:
+            v = rows[i]
+            layers[v] = depth
+            correction = set()
+            bits = solutions[i]
+            while bits:
+                bit = bits & -bits
+                correction.add(columns[bit.bit_length() - 1])
+                bits ^= bit
+            corrections[v] = correction
+            if v in column_index and column_index[v] not in inserted:
+                j = column_index[v]
+                inserted.add(j)
+                pending.append(j)
+        active = [i for i in active if residual[i]]
+
+    return ({v: layer if reverse else depth - layer for v, layer in layers.items()},
+            corrections)
+
+
+
+def _gflow_matrix(
+    g: BaseGraph[VT, ET], focus: bool=False, reverse: bool=False, pauli: bool=False
+) -> Optional[Tuple[Dict[VT, int], Dict[VT, Set[VT]]]]:
+    """Retained M/N reference backend; not selected by the public finder.
+
+    Square M uses its inverse and a DAG check. Rectangular M uses C0+KP.
+    This Python implementation was slower than incremental on the local suite;
+    keep it for algebra tests and evaluating a future accelerated square path.
+    Focused non-output grounds retain the legacy convention.
+    """
     vertices = [v for v in g.vertices() if vertex_is_zx(g.type(v))]
     vertex_set = set(vertices)
     inputs = {v for b in g.inputs() for v in g.neighbors(b) if v in vertex_set}

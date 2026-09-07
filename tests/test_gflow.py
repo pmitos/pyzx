@@ -22,7 +22,7 @@ from unittest.mock import patch
 
 from pyzx.circuit import Circuit
 from pyzx.gflow import (
-    gflow, _right_inverse, _kernel_basis, _find_kernel_adjustment, _dag_layers,
+    gflow, _gflow_matrix, _right_inverse, _kernel_basis, _find_kernel_adjustment, _dag_layers,
 )
 from pyzx.graph import Graph
 from pyzx.pauliweb import compute_pauli_webs
@@ -205,7 +205,7 @@ class TestGFlow(unittest.TestCase):
             with self.subTest(column_order=column_order):
                 self.assert_valid_flow(graph, gflow(graph), False, False, False)
 
-    def assert_dense_system(self, extra_outputs):
+    def assert_dense_system(self, extra_outputs, finder=gflow):
         """Check the same full-rank block with square or rectangular demand."""
         rng = random.Random(67)
         n = 67
@@ -224,7 +224,7 @@ class TestGFlow(unittest.TestCase):
         self.assertEqual(len(graph.outputs()), n + extra_outputs)
         for focus, pauli in product((False, True), repeat=2):
             with self.subTest(focus=focus, pauli=pauli, extra_outputs=extra_outputs):
-                result = gflow(graph, focus=focus, pauli=pauli)
+                result = finder(graph, focus=focus, pauli=pauli)
                 self.assert_valid_flow(graph, result, pauli, False, focus)
                 if result is not None:
                     self.assertTrue(any(vertices[2 * n - 1] in c for c in result[1].values()))
@@ -234,14 +234,16 @@ class TestGFlow(unittest.TestCase):
         with patch('pyzx.gflow._kernel_basis', side_effect=AssertionError('Square kernel')):
             with patch('pyzx.gflow._find_kernel_adjustment',
                        side_effect=AssertionError('Square adjustment')):
-                self.assert_dense_system(extra_outputs=0)
+                self.assert_dense_system(extra_outputs=0, finder=_gflow_matrix)
+        self.assert_dense_system(extra_outputs=0)
 
     def test_unequal_io_dense_rectangular_system(self):
         """More outputs give a 67-by-69 demand, including dependent/zero columns."""
         with patch('pyzx.gflow._find_kernel_adjustment',
                    wraps=_find_kernel_adjustment) as adjustment:
-            self.assert_dense_system(extra_outputs=2)
+            self.assert_dense_system(extra_outputs=2, finder=_gflow_matrix)
             self.assertEqual(adjustment.call_count, 4)
+        self.assert_dense_system(extra_outputs=2)
 
     def test_rectangular_kernel_adjustment_removes_cycle(self):
         """C0 has a cycle; a nonzero KP is necessary to find the flow."""
@@ -252,7 +254,7 @@ class TestGFlow(unittest.TestCase):
         # two-cycle, and P=[1,0] cancels its row-1, column-0 entry.
         with patch('pyzx.gflow._find_kernel_adjustment',
                    wraps=_find_kernel_adjustment) as adjustment:
-            result = gflow(graph)
+            result = _gflow_matrix(graph)
             adjustment.assert_called_once_with([0, 1], [2, 1], 1)
         self.assertEqual(_find_kernel_adjustment([0, 1], [2, 1], 1), [1])
         self.assert_valid_flow(graph, result, False, False, False)
@@ -274,9 +276,10 @@ class TestGFlow(unittest.TestCase):
                               outputs=[5 * j + 4 for j in range(chains)])
         with patch('pyzx.gflow._find_kernel_adjustment',
                    wraps=_find_kernel_adjustment) as adjustment:
-            result = gflow(graph)
+            result = _gflow_matrix(graph)
             self.assertEqual(adjustment.call_args.args[2], chains)
         self.assert_valid_flow(graph, result, False, False, False)
+        self.assert_valid_flow(graph, gflow(graph), False, False, False)
         if result is not None:
             self.assertEqual(set(result[0].values()), set(range(5)))
 
@@ -429,8 +432,12 @@ class TestGFlow(unittest.TestCase):
                         with self.subTest(sample=sample, pauli=pauli,
                                           reverse=reverse, focus=focus):
                             result = gflow(graph, focus, reverse, pauli)
+                            matrix = _gflow_matrix(graph, focus, reverse, pauli)
                             legacy = gflow(graph, focus, reverse, pauli, method="legacy")
                             self.assertEqual(result is None, legacy is None)
+                            self.assertEqual(result is None, matrix is None)
+                            if matrix is not None:
+                                self.assert_valid_flow(graph, matrix, pauli, reverse, focus)
                             if result is not None:
                                 self.assert_valid_flow(graph, result, pauli, reverse, focus)
 
@@ -446,7 +453,7 @@ class TestGFlow(unittest.TestCase):
             self.assert_valid_flow(graph, result, False, False, focus)
 
     def test_long_chain(self):
-        """The square inverse has a valid dependency chain across 129 layers."""
+        """Incrementally unlocked columns preserve focusing across 129 layers."""
         graph = Graph()
         vertices = [graph.add_vertex(VertexType.Z, phase=Fraction(1, 4))
                     for _ in range(130)]
@@ -468,6 +475,14 @@ class TestGFlow(unittest.TestCase):
         self.assertEqual(gflow(graph, pauli=True), ({v: 0}, {v: {v}}))
         with self.assertRaises(ValueError):
             gflow(graph, method="unknown")
+
+    def test_default_uses_incremental_for_both_boundary_shapes(self):
+        """Do not select the slower Python matrix backend for balanced graphs."""
+        with patch('pyzx.gflow._gflow_matrix', side_effect=AssertionError('Matrix dispatch')):
+            for outputs in ([2], [1, 2]):
+                graph, _ = open_graph([Fraction(1, 4)] * 3, [(0, 1), (1, 2)],
+                                      inputs=[0], outputs=outputs)
+                self.assert_valid_flow(graph, gflow(graph), False, False, False)
 
     def test_pauli_y_diagonal_correction(self):
         """A Pauli-Y vertex can use the diagonal of the demand matrix."""
