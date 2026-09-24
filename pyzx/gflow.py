@@ -285,8 +285,11 @@ def _dag_right_inverse(
             for k in _set_bits(row):
                 correction[j] ^= adjustment[k]
     # In particular, square M never constructs a kernel or solves for P.
-    order_product = [correction[j] if j >= 0 else 0 for j in order_columns]
-    layers = _dag_layers(order_product)
+    if row_count == column_count:
+        layers = _square_dag_layers(correction, order_columns)
+    else:
+        order_product = [correction[j] if j >= 0 else 0 for j in order_columns]
+        layers = _dag_layers(order_product)
     return None if layers is None else (correction, layers)
 
 
@@ -397,6 +400,52 @@ def _dag_layers(matrix: list[int]) -> Optional[list[list[int]]]:
                     following.append(source)
         batch = following
     return layers if count == len(matrix) else None
+
+
+def _square_dag_layers(
+    correction: list[int], order_columns: list[int]
+) -> Optional[list[list[int]]]:
+    """Check the XY principal submatrix of C, then layer the zero-N rows.
+
+    For square M, C is unique. A selected row of NC is the corresponding row
+    of C; every other row is zero. Only selected vertices can form a cycle.
+    An unselected vertex has edges only into selected vertices, so its layer
+    is one beyond the latest layer of its targets (or zero if it has none).
+    """
+    n = len(order_columns)
+    selected = [i for i, j in enumerate(order_columns) if j >= 0]
+    selected_mask = sum(1 << i for i in selected)
+    outgoing = [0] * n
+    for target in selected:
+        for source in _set_bits(correction[order_columns[target]] & selected_mask):
+            outgoing[source] += 1
+
+    depths = [-1] * n
+    batch = [i for i in selected if outgoing[i] == 0]
+    depth = 0
+    count = 0
+    while batch:
+        following = []
+        for target in batch:
+            depths[target] = depth
+            count += 1
+            for source in _set_bits(correction[order_columns[target]] & selected_mask):
+                outgoing[source] -= 1
+                if outgoing[source] == 0:
+                    following.append(source)
+        batch = following
+        depth += 1
+    if count != len(selected):
+        return None
+
+    for target in selected:
+        for source in _set_bits(correction[order_columns[target]] & ~selected_mask):
+            depths[source] = max(depths[source], depths[target] + 1)
+    depths = [max(0, depth) for depth in depths]
+    layers = [[] for _ in range(max(depths, default=-1) + 1)]
+    for vertex, depth in enumerate(depths):
+        layers[depth].append(vertex)
+    return layers
 
 
 def _gflow_legacy(

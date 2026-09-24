@@ -65,6 +65,10 @@ Balanced-case option and reference backend
 When |I|=|O| on a ground-free graph, M is square. Mbqcflow's approach is then
 particularly simple: compute C=M^-1, reject singular M, and check NC for cycles.
 Since N selects rows, NC does not require general multiplication for XY/X/Y.
+In fact, let T be the measured, non-input XY vertices. Every other row of NC
+is zero, so a cycle exists exactly when the principal submatrix C[T,T] has a
+cycle. The square reference path checks only this restriction for cycles and
+then assigns layers to the other vertices from their edges into T.
 
 The previous M/N port is retained privately as ``_gflow_matrix``, with its
 matrix-algebra tests. Its rectangular path constructs C0 and K, maintains

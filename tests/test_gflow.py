@@ -22,7 +22,8 @@ from unittest.mock import patch
 
 from pyzx.circuit import Circuit
 from pyzx.gflow import (
-    gflow, _gflow_matrix, _right_inverse, _kernel_basis, _find_kernel_adjustment, _dag_layers,
+    gflow, _gflow_matrix, _right_inverse, _kernel_basis, _find_kernel_adjustment,
+    _dag_right_inverse, _dag_layers, _square_dag_layers,
 )
 from pyzx.graph import Graph
 from pyzx.pauliweb import compute_pauli_webs
@@ -585,6 +586,30 @@ class TestFlowMatrices(unittest.TestCase):
         self.assertEqual(_dag_layers([0, 0]), [[0, 1]])
         self.assertIsNone(_dag_layers([1]))
         self.assertIsNone(_dag_layers([2, 1]))
+
+    def test_square_dag_restriction_preserves_full_layers(self):
+        """The XY-only cycle check agrees with full NC, including Pauli layers."""
+        rng = random.Random(23440)
+        for n in range(8):
+            for _ in range(100):
+                correction = [rng.getrandbits(n) for _ in range(n)]
+                coordinates = rng.sample(range(n), n)
+                order_columns = [j if rng.randrange(2) else -1 for j in coordinates]
+                full = _dag_layers([correction[j] if j >= 0 else 0
+                                    for j in order_columns])
+                restricted = _square_dag_layers(correction, order_columns)
+                with self.subTest(n=n, order_columns=order_columns, correction=correction):
+                    self.assertEqual(restricted is None, full is None)
+                    if full is not None and restricted is not None:
+                        self.assertEqual([set(batch) for batch in restricted],
+                                         [set(batch) for batch in full])
+
+    def test_square_inverse_uses_restricted_dag_check(self):
+        """The square path never builds full NC for cycle detection."""
+        with patch('pyzx.gflow._dag_layers', side_effect=AssertionError('Full DAG check')):
+            self.assertEqual(_dag_right_inverse([2, 1], [0, -1], 2),
+                             ([2, 1], [[0], [1]]))
+            self.assertIsNone(_dag_right_inverse([2, 1], [0, 1], 2))
 
 
 if __name__ == '__main__':
