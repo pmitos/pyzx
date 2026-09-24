@@ -32,12 +32,16 @@ def gflow(
     :param focus: Require focused corrections, including constraints on grounds.
     :param reverse: Reverse the roles of inputs and outputs.
     :param pauli: Interpret Pauli phases as X or Y measurements.
-    :param method: Incremental ``cubic`` (default) or retained ``legacy`` finder.
+    :param method: ``cubic`` (default) chooses the square matrix finder when
+        inputs and outputs are balanced, and incremental elimination otherwise.
+        ``incremental`` forces elimination; ``legacy`` retains the old finder.
 
-    The cubic method returns focused corrections even when ``focus=False``.
-    That mode omits ground rows; ``focus=True`` keeps their homogeneous
-    constraints. Corrections and layers can differ between methods. Ordinary
-    order runs from smaller to larger layers; reverse mode inverts numbering.
+    The square path requires no non-output grounds; otherwise ``cubic`` uses
+    incremental elimination. Both paths return focused corrections even when
+    ``focus=False``. That mode omits ground rows; ``focus=True`` keeps their
+    homogeneous constraints. Corrections and layers can differ between methods.
+    Ordinary order runs from smaller to larger layers; reverse mode inverts
+    numbering.
 
     For XY/X/Y, the Mitosek--Backens order-demand matrix N consists only of
     zero rows and an identity subblock. Order constraints therefore just
@@ -52,7 +56,7 @@ def gflow(
     """
     if method == "legacy":
         return _gflow_legacy(g, focus=focus, reverse=reverse, pauli=pauli)
-    if method != "cubic":
+    if method not in ("cubic", "incremental"):
         raise ValueError("Unknown flow method: " + method)
 
     vertices = [v for v in g.vertices() if vertex_is_zx(g.type(v))]
@@ -61,7 +65,10 @@ def gflow(
     outputs = {v for b in g.outputs() for v in g.neighbors(b) if v in vertex_set}
     if reverse:
         inputs, outputs = outputs, inputs
-    processed = outputs | (g.grounds() & vertex_set)
+    non_output_grounds = (g.grounds() & vertex_set) - outputs
+    if method == "cubic" and len(inputs) == len(outputs) and not non_output_grounds:
+        return _gflow_matrix(g, focus=focus, reverse=reverse, pauli=pauli)
+    processed = outputs | non_output_grounds
     paulis = set()
     ys = set()
     if pauli:
@@ -146,12 +153,11 @@ def gflow(
 def _gflow_matrix(
     g: BaseGraph[VT, ET], focus: bool=False, reverse: bool=False, pauli: bool=False
 ) -> Optional[Tuple[Dict[VT, int], Dict[VT, Set[VT]]]]:
-    """Retained M/N reference backend; not selected by the public finder.
+    """M/N backend selected for balanced graphs without non-output grounds.
 
-    Square M uses its inverse and a DAG check. Rectangular M uses C0+KP.
-    This Python implementation was slower than incremental on the local suite;
-    keep it for algebra tests and evaluating a future accelerated square path.
-    Focused non-output grounds retain the legacy convention.
+    Square M uses its inverse and the XY-restricted DAG check. The rectangular
+    C0+KP path is retained for algebra tests and direct calls. Focused
+    non-output grounds retain the legacy convention for direct calls.
     """
     vertices = [v for v in g.vertices() if vertex_is_zx(g.type(v))]
     vertex_set = set(vertices)

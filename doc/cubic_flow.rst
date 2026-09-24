@@ -1,10 +1,12 @@
 Cubic flow finding for XY, X and Y
 =================================
 
-``pyzx.gflow.gflow`` uses incremental column elimination by default
-(``method="cubic"``); ``method="legacy"`` retains the previous PyZX finder.
-The incremental finder uses packed Python integers without new dependencies.
-It returns focused corrections even when ``focus=False``; correction choices
+``pyzx.gflow.gflow`` selects the square inverse finder for balanced inputs and
+outputs without non-output grounds, and incremental column elimination
+otherwise (the default ``method="cubic"``). ``method="incremental"`` forces
+column elimination, while ``method="legacy"`` retains the previous PyZX
+finder. Both cubic paths use packed Python integers without new dependencies
+and return focused corrections even when ``focus=False``; correction choices
 and layer numbers can differ from legacy.
 
 Why XY/X/Y permits this method
@@ -59,28 +61,26 @@ handles both conventions directly, without a legacy fallback.
 Normal numbering runs from earlier measurements to later ones; reverse mode
 swaps input/output roles and reverses the layer-numbering convention.
 
-Balanced-case option and reference backend
------------------------------------------
+Balanced case and reference backend
+-----------------------------------
 
 When |I|=|O| on a ground-free graph, M is square. Mbqcflow's approach is then
 particularly simple: compute C=M^-1, reject singular M, and check NC for cycles.
 Since N selects rows, NC does not require general multiplication for XY/X/Y.
 In fact, let T be the measured, non-input XY vertices. Every other row of NC
 is zero, so a cycle exists exactly when the principal submatrix C[T,T] has a
-cycle. The square reference path checks only this restriction for cycles and
+cycle. The square path checks only this restriction for cycles and
 then assigns layers to the other vertices from their edges into T.
 
-The previous M/N port is retained privately as ``_gflow_matrix``, with its
-matrix-algebra tests. Its rectangular path constructs C0 and K, maintains
-[NK | NC0 | I] to obtain P, and returns C=C0+KP. Focused non-output grounds
-fall back to legacy in this reference backend only.
+The M/N backend ``_gflow_matrix`` supplies this square path. Its rectangular
+path remains available for matrix-algebra tests and direct calls: it
+constructs C0 and K, maintains [NK | NC0 | I] to obtain P, and returns
+C=C0+KP. Focused non-output grounds fall back to legacy in direct calls only;
+the public cubic finder uses incremental elimination for such graphs.
 
-The public finder does not dispatch balanced cases to this backend: its Python
-inverse-and-DAG implementation was slower than incremental on the local suite.
-An accelerated square inverse could support a future hybrid, but must be
-benchmarked end to end, including correction-set conversion. NumPy is already
-a PyZX dependency; Numba is not. No new accelerated square backend is currently
-enabled.
+The default dispatch uses boundary balance, not a runtime estimate. The square
+finder has no guaranteed speed advantage over incremental elimination; both
+must be compared end to end, including correction-set conversion.
 
 Verification
 ------------
@@ -93,7 +93,8 @@ M/N backend and legacy, and validate successful witnesses independently.
 Separate dense square/rectangular fixtures and multilayer cases cover both
 implementations. Algebra tests retain MC0=I, MK=0, nonzero kernel adjustments
 needed to repair cycles, and parameter/order enumeration. Dispatch tests
-ensure the public default remains incremental for both boundary shapes.
+ensure the public default selects square for balanced ground-free graphs and
+incremental elimination otherwise.
 
 Other cases cover rank failure, cycles, zero/dependent columns, phase
 periodicity, input exclusion, disconnected components, grounds, boundary-only
@@ -103,5 +104,5 @@ validate the actual finder witness in both circuit directions.
 
 The task's benchmark reports preserve the comparisons of commits 942dbfc
 (incremental) and 5183e0e (M/N port) with mbqcflow auto. Those scripts load both
-historical snapshots explicitly, so changing the default does not silently
-change the benchmarked algorithms. Proper LUH benchmarking remains planned.
+historical snapshots explicitly, so changing the current default does not
+retroactively change the benchmarked algorithms.

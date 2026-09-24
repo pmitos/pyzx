@@ -433,10 +433,15 @@ class TestGFlow(unittest.TestCase):
                         with self.subTest(sample=sample, pauli=pauli,
                                           reverse=reverse, focus=focus):
                             result = gflow(graph, focus, reverse, pauli)
+                            incremental = gflow(graph, focus, reverse, pauli,
+                                                method="incremental")
                             matrix = _gflow_matrix(graph, focus, reverse, pauli)
                             legacy = gflow(graph, focus, reverse, pauli, method="legacy")
                             self.assertEqual(result is None, legacy is None)
+                            self.assertEqual(result is None, incremental is None)
                             self.assertEqual(result is None, matrix is None)
+                            if incremental is not None:
+                                self.assert_valid_flow(graph, incremental, pauli, reverse, focus)
                             if matrix is not None:
                                 self.assert_valid_flow(graph, matrix, pauli, reverse, focus)
                             if result is not None:
@@ -448,10 +453,11 @@ class TestGFlow(unittest.TestCase):
         u = graph.add_vertex(VertexType.Z, phase=Fraction(1, 4))
         ground = graph.add_vertex(VertexType.Z, ground=True)
         graph.add_edge((u, ground), EdgeType.HADAMARD)
-        for focus in (False, True):
-            result = gflow(graph, focus=focus)
-            self.assertEqual(result is None, gflow(graph, focus=focus, method="legacy") is None)
-            self.assert_valid_flow(graph, result, False, False, focus)
+        with patch('pyzx.gflow._gflow_matrix', side_effect=AssertionError('Ground matrix dispatch')):
+            for focus in (False, True):
+                result = gflow(graph, focus=focus)
+                self.assertEqual(result is None, gflow(graph, focus=focus, method="legacy") is None)
+                self.assert_valid_flow(graph, result, False, False, focus)
 
     def test_long_chain(self):
         """Incrementally unlocked columns preserve focusing across 129 layers."""
@@ -465,6 +471,7 @@ class TestGFlow(unittest.TestCase):
             b = graph.add_vertex(VertexType.BOUNDARY)
             graph.add_edge((v, b), EdgeType.SIMPLE)
             setter((b,))
+        self.assert_valid_flow(graph, gflow(graph, method="incremental"), False, False, False)
         self.assert_valid_flow(graph, gflow(graph), False, False, False)
 
     def test_empty_and_isolated(self):
@@ -477,13 +484,19 @@ class TestGFlow(unittest.TestCase):
         with self.assertRaises(ValueError):
             gflow(graph, method="unknown")
 
-    def test_default_uses_incremental_for_both_boundary_shapes(self):
-        """Do not select the slower Python matrix backend for balanced graphs."""
-        with patch('pyzx.gflow._gflow_matrix', side_effect=AssertionError('Matrix dispatch')):
-            for outputs in ([2], [1, 2]):
-                graph, _ = open_graph([Fraction(1, 4)] * 3, [(0, 1), (1, 2)],
-                                      inputs=[0], outputs=outputs)
-                self.assert_valid_flow(graph, gflow(graph), False, False, False)
+    def test_default_dispatches_by_boundary_shape(self):
+        """Square balanced systems use the matrix path; others stay incremental."""
+        balanced, _ = open_graph([Fraction(1, 4)] * 3, [(0, 1), (1, 2)],
+                                 inputs=[0], outputs=[2])
+        unbalanced, _ = open_graph([Fraction(1, 4)] * 3, [(0, 1), (1, 2)],
+                                   inputs=[0], outputs=[1, 2])
+        with patch('pyzx.gflow._gflow_matrix', wraps=_gflow_matrix) as matrix:
+            self.assert_valid_flow(balanced, gflow(balanced), False, False, False)
+            matrix.assert_called_once()
+            self.assert_valid_flow(unbalanced, gflow(unbalanced), False, False, False)
+            self.assert_valid_flow(balanced, gflow(balanced, method="incremental"),
+                                   False, False, False)
+            matrix.assert_called_once()
 
     def test_pauli_y_diagonal_correction(self):
         """A Pauli-Y vertex can use the diagonal of the demand matrix."""
