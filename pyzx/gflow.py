@@ -31,7 +31,8 @@ def gflow(
     :param g: A graph-like ZX diagram.
     :param focus: Require focused corrections, including constraints on grounds.
     :param reverse: Reverse the roles of inputs and outputs.
-    :param pauli: Interpret Pauli phases as X or Y measurements.
+    :param pauli: Deprecated Pauli-flow mode; use :func:`pauli_flow` instead.
+        Retained for existing callers.
     :param method: ``cubic`` (default) chooses the square matrix finder when
         inputs and outputs are balanced, and incremental elimination otherwise.
         ``incremental`` forces elimination; ``legacy`` retains the old finder.
@@ -148,6 +149,25 @@ def gflow(
     return ({v: layer if reverse else depth - layer for v, layer in layers.items()},
             corrections)
 
+
+
+def pauli_flow(
+    g: BaseGraph[VT, ET], focus: bool=False, reverse: bool=False,
+    *, method: str="cubic"
+) -> Optional[Tuple[Dict[VT, int], Dict[VT, Set[VT]]]]:
+    r"""Find Pauli flow for XY, X, and Y measurements.
+
+    Infer measurement types from spider phases: Pauli phases give X,
+    half-integer Clifford phases give Y, and other phases give XY.
+    Other measurement types are not supported.
+
+    :param g: A graph-like ZX diagram.
+    :param focus: Require focused corrections, including ground constraints.
+    :param reverse: Reverse the roles of inputs and outputs.
+    :param method: Flow-finding backend; see :func:`gflow`.
+    :return: Layers and correction sets, or ``None`` if no flow exists.
+    """
+    return gflow(g, focus=focus, reverse=reverse, pauli=True, method=method)
 
 
 def _gflow_matrix(
@@ -448,7 +468,7 @@ def _square_dag_layers(
         for source in _set_bits(correction[order_columns[target]] & ~selected_mask):
             depths[source] = max(depths[source], depths[target] + 1)
     depths = [max(0, depth) for depth in depths]
-    layers = [[] for _ in range(max(depths, default=-1) + 1)]
+    layers: list[list[int]] = [[] for _ in range(max(depths, default=-1) + 1)]
     for vertex, depth in enumerate(depths):
         layers[depth].append(vertex)
     return layers

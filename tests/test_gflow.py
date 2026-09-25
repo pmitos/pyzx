@@ -22,7 +22,8 @@ from unittest.mock import patch
 
 from pyzx.circuit import Circuit
 from pyzx.gflow import (
-    gflow, _gflow_matrix, _right_inverse, _kernel_basis, _find_kernel_adjustment,
+    gflow, pauli_flow, _gflow_matrix, _right_inverse, _kernel_basis,
+    _find_kernel_adjustment,
     _dag_right_inverse, _dag_layers, _square_dag_layers,
 )
 from pyzx.graph import Graph
@@ -159,13 +160,13 @@ class TestGFlow(unittest.TestCase):
                             for focus in (False, True):
                                 with self.subTest(n=n, edges=edges, inputs=inputs,
                                                   outputs=outputs, labels=labels, focus=focus):
-                                    result = gflow(graph, focus=focus, pauli=True)
+                                    result = pauli_flow(graph, focus=focus)
                                     self.assertEqual(result is not None, expected)
                                     if result is not None:
                                         self.assert_valid_flow(graph, result, True, False, focus)
                                     # All-XY patterns also exercise ordinary gflow.
                                     if all(label == 'XY' for label in labels_tuple):
-                                        ordinary = gflow(graph, focus=focus, pauli=False)
+                                        ordinary = gflow(graph, focus=focus)
                                         self.assertEqual(ordinary is not None, expected)
                                         if ordinary is not None:
                                             self.assert_valid_flow(graph, ordinary, False, False, focus)
@@ -291,6 +292,16 @@ class TestGFlow(unittest.TestCase):
             self.assertIsNone(gflow(graph, pauli=False))
             self.assert_valid_flow(graph, gflow(graph, pauli=True), True, False, False)
 
+    def test_pauli_flow_entry_point(self):
+        """The explicit API preserves the existing Pauli-flow mode."""
+        graph, _ = open_graph([Fraction(1, 2)])
+        self.assertIsNone(gflow(graph))
+        for method in ("cubic", "incremental", "legacy"):
+            with self.subTest(method=method):
+                result = pauli_flow(graph, method=method)
+                self.assertEqual(result, gflow(graph, pauli=True, method=method))
+                self.assert_valid_flow(graph, result, True, False, False)
+
     def test_phase_periodicity_and_input_exclusion(self):
         """Odd half-integer phases are Y, but inputs can never self-correct."""
         for phase in (Fraction(-3, 2), Fraction(-1, 2), Fraction(1, 2),
@@ -394,11 +405,11 @@ class TestGFlow(unittest.TestCase):
         graph = circuit.to_graph()
         before = graph.to_json()
         for backwards in (False, True):
-            def checked_finder(g, focus=False, reverse=False, pauli=False):
-                result = gflow(g, focus=focus, reverse=reverse, pauli=pauli)
-                self.assert_valid_flow(g, result, pauli, reverse, focus)
+            def checked_finder(g, focus=False, reverse=False):
+                result = pauli_flow(g, focus=focus, reverse=reverse)
+                self.assert_valid_flow(g, result, True, reverse, focus)
                 return result
-            with patch('pyzx.pauliweb.gflow', side_effect=checked_finder) as finder:
+            with patch('pyzx.pauliweb.pauli_flow', side_effect=checked_finder) as finder:
                 compute_pauli_webs(graph, backwards=backwards)
                 finder.assert_called_once()
             self.assertEqual(before, graph.to_json())

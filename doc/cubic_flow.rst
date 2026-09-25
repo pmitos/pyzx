@@ -1,7 +1,13 @@
 Cubic flow finding for XY, X and Y
 =================================
 
-``pyzx.gflow.gflow`` selects the square inverse finder for balanced inputs and
+Use ``pyzx.gflow.gflow`` for ordinary XY gflow and ``pyzx.gflow.pauli_flow``
+for Pauli flow with XY, X, and Y measurements. The latter infers X and Y from
+spider phases; other measurement types are not supported. The old
+``gflow(..., pauli=True)`` call is deprecated but remains supported for
+compatibility; new Pauli-flow callers should use ``pauli_flow``.
+
+Both entry points select the square inverse finder for balanced inputs and
 outputs without non-output grounds, and incremental column elimination
 otherwise (the default ``method="cubic"``). ``method="incremental"`` forces
 column elimination, while ``method="legacy"`` retains the previous PyZX

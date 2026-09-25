@@ -10,6 +10,10 @@ Hence, occasionally changes will be backwards incompatible (although they will a
 
 ### Added
 - Cubic flow finding for XY, X, and Y measurements, with the previous finder available as `method="legacy"`.
+- `pyzx.gflow.pauli_flow` as the explicit entry point for Pauli flow on XY, X, and Y measurements.
+
+### Deprecated
+- `gflow(..., pauli=True)` remains supported for compatibility; use `pauli_flow(...)` for new Pauli-flow calls.
 
 ### Fixed
 - Pauli-flow finder now correctly accounts for Pauli-Y vertices in correction sets.
