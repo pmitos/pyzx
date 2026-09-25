@@ -123,8 +123,8 @@ class GeneticOptimizer():
         actions: A list of mutation functions.
         score: A function to calculate the fitness score."""
 
-    def __init__(self, actions=[rand_pivot, rand_lc], score=default_score):
-        self.actions = actions
+    def __init__(self, actions=None, score=default_score):
+        self.actions = list((rand_pivot, rand_lc) if actions is None else actions)
         self.score = score # function that maps Mutant -> Double
 
     # TODO: multi-thread
