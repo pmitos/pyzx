@@ -23,6 +23,148 @@ from .utils import phase_is_clifford, phase_is_pauli, vertex_is_zx
 
 
 def gflow(
+    g: BaseGraph[VT, ET], focus: bool=False, reverse: bool=False, pauli: bool=False,
+    *, method: str="cubic"
+) -> Optional[Tuple[Dict[VT, int], Dict[VT, Set[VT]]]]:
+    r"""Find gflow or Pauli flow for XY/X/Y measurements.
+
+    :param g: A graph-like ZX diagram.
+    :param focus: Require focused corrections, including constraints on grounds.
+    :param reverse: Reverse the roles of inputs and outputs.
+    :param pauli: Deprecated Pauli-flow mode; use :func:`pauli_flow` instead.
+        Retained for existing callers.
+    :param method: ``cubic`` (default) and ``incremental`` both use incremental
+        column elimination; ``legacy`` retains the previous finder.
+
+    Incremental elimination returns focused corrections even when
+    ``focus=False``. That mode omits ground rows; ``focus=True`` keeps their
+    homogeneous constraints. Corrections and layers can differ from legacy.
+    Ordinary order runs from smaller to larger layers; reverse mode inverts
+    numbering.
+
+    For XY/X/Y, the Mitosek--Backens order-demand matrix N consists only of
+    zero rows and an identity subblock. Order constraints therefore just
+    forbid individual unprocessed XY correction coordinates. This permits
+    incremental column elimination without constructing a global right inverse,
+    kernel basis or kernel-adjustment system. General XZ/YZ order demands
+    cannot be handled by this simple column-availability rule.
+
+    Each candidate column is inserted at most once; each new pivot updates
+    each unsolved RHS at most once. Packed integer vectors give O(n^3) bit
+    work and O(n^2) matrix bits. See https://arxiv.org/abs/2410.23439 for M/N.
+    """
+    if method == "legacy":
+        return _gflow_legacy(g, focus=focus, reverse=reverse, pauli=pauli)
+    if method not in ("cubic", "incremental"):
+        raise ValueError("Unknown flow method: " + method)
+
+    vertices = [v for v in g.vertices() if vertex_is_zx(g.type(v))]
+    vertex_set = set(vertices)
+    inputs = {v for b in g.inputs() for v in g.neighbors(b) if v in vertex_set}
+    outputs = {v for b in g.outputs() for v in g.neighbors(b) if v in vertex_set}
+    if reverse:
+        inputs, outputs = outputs, inputs
+    processed = outputs | (g.grounds() & vertex_set)
+    paulis = set()
+    ys = set()
+    if pauli:
+        for v in vertices:
+            phase = g.phase(v) % 2
+            if phase_is_pauli(phase):
+                paulis.add(v)
+            elif phase_is_clifford(phase):
+                paulis.add(v)
+                ys.add(v)
+
+    rows = [v for v in vertices if v not in (outputs if focus else processed)]
+    row_index = {v: i for i, v in enumerate(rows)}
+    columns = [v for v in vertices if v not in inputs]
+    column_index = {v: j for j, v in enumerate(columns)}
+    demand = []
+    for v in columns:
+        bits = 0
+        for w in g.neighbors(v):
+            if w in row_index:
+                bits |= 1 << row_index[w]
+        if v in ys and v in row_index:
+            bits |= 1 << row_index[v]
+        demand.append(bits)
+
+    residual = [1 << i for i in range(len(rows))]
+    solutions = [0] * len(rows)
+    active = [i for i, v in enumerate(rows) if v not in processed]
+    # Each entry is (pivot bit, transformed M column, correction coordinates).
+    # Later basis vectors have zero entries at every earlier pivot.
+    basis: list[tuple[int, int, int]] = []
+    # N only selects XY coordinates: outputs and X/Y correctors are available
+    # now; each non-input XY column is added after its vertex is processed.
+    # Keep every demand row, including already solved ones, to retain focusing.
+    pending = [column_index[v] for v in columns if v in processed or v in paulis]
+    inserted = set(pending)
+    layers = {v: 0 for v in processed}
+    corrections: Dict[VT, Set[VT]] = {}
+    depth = 0
+    while active:
+        for j in pending:
+            vector, combination = demand[j], 1 << j
+            for pivot, column, coordinates in basis:
+                if vector & pivot:
+                    vector ^= column
+                    combination ^= coordinates
+            if not vector:
+                continue
+            pivot = vector & -vector
+            basis.append((pivot, vector, combination))
+            for i in active:
+                if residual[i] & pivot:
+                    residual[i] ^= vector
+                    solutions[i] ^= combination
+
+        solved = [i for i in active if not residual[i]]
+        if not solved:
+            return None
+        depth += 1
+        pending = []
+        for i in solved:
+            v = rows[i]
+            layers[v] = depth
+            correction = set()
+            bits = solutions[i]
+            while bits:
+                bit = bits & -bits
+                correction.add(columns[bit.bit_length() - 1])
+                bits ^= bit
+            corrections[v] = correction
+            if v in column_index and column_index[v] not in inserted:
+                j = column_index[v]
+                inserted.add(j)
+                pending.append(j)
+        active = [i for i in active if residual[i]]
+
+    return ({v: layer if reverse else depth - layer for v, layer in layers.items()},
+            corrections)
+
+
+def pauli_flow(
+    g: BaseGraph[VT, ET], focus: bool=False, reverse: bool=False,
+    *, method: str="cubic"
+) -> Optional[Tuple[Dict[VT, int], Dict[VT, Set[VT]]]]:
+    r"""Find Pauli flow for XY, X, and Y measurements.
+
+    Infer measurement types from spider phases: Pauli phases give X,
+    half-integer Clifford phases give Y, and other phases give XY.
+    Other measurement types are not supported.
+
+    :param g: A graph-like ZX diagram.
+    :param focus: Require focused corrections, including ground constraints.
+    :param reverse: Reverse the roles of inputs and outputs.
+    :param method: Flow-finding backend; see :func:`gflow`.
+    :return: Layers and correction sets, or ``None`` if no flow exists.
+    """
+    return gflow(g, focus=focus, reverse=reverse, pauli=True, method=method)
+
+
+def _gflow_legacy(
     g: BaseGraph[VT, ET], focus: bool=False, reverse: bool=False, pauli: bool=False
 ) -> Optional[Tuple[Dict[VT, int], Dict[VT, Set[VT]]]]:
     r"""Compute the gflow of a diagram in graph-like form.
@@ -154,4 +296,3 @@ def gflow(
         else:
             processed.update(correct)
             k += 1
-
