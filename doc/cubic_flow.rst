@@ -4,7 +4,14 @@ Incremental flow finding for XY, X and Y
 Use ``pyzx.gflow.gflow`` for ordinary XY gflow and ``pyzx.gflow.pauli_flow``
 for Pauli flow with XY, X and Y measurements. The latter infers X and Y from
 spider phases; other measurement types are not supported. The old
-``gflow(..., pauli=True)`` call remains available for compatibility.
+``gflow(..., pauli=True)`` call delegates to ``pauli_flow`` for compatibility.
+
+Each entry point prepares explicit measurement assignments before calling
+the shared auxiliary ``_find_incremental_flow``. ``gflow`` assigns XY to
+every spider regardless of phase; ``pauli_flow`` infers XY/X/Y assignments.
+The auxiliary finder uses those assignments without reading phases. Both
+entry points also assign grounded spiders, whose rows may be retained as
+homogeneous constraints by ``focus=True``.
 
 Both entry points use incremental column elimination by default. The
 ``method="cubic"`` default and ``method="incremental"`` name select the same

@@ -21,7 +21,7 @@ from itertools import combinations, permutations, product
 from unittest.mock import patch
 
 from pyzx.circuit import Circuit
-from pyzx.gflow import gflow, pauli_flow
+from pyzx.gflow import gflow, pauli_flow, _find_incremental_flow
 from pyzx.graph import Graph
 from pyzx.pauliweb import compute_pauli_webs
 from pyzx.utils import EdgeType, VertexType
@@ -243,6 +243,34 @@ class TestGFlow(unittest.TestCase):
                 result = pauli_flow(graph, method=method)
                 self.assertEqual(result, gflow(graph, pauli=True, method=method))
                 self.assert_valid_flow(graph, result, True, False, False)
+
+    def test_incremental_finder_uses_explicit_measurements(self):
+        """Explicit X/Y assignments apply even to non-Clifford phases."""
+        graph, vertices = open_graph([Fraction(1, 4)] * 2, [(0, 1)])
+        before = graph.to_json()
+        self.assertIsNone(_find_incremental_flow(graph, {v: "XY" for v in vertices}))
+        result = _find_incremental_flow(graph, {v: "X" for v in vertices})
+        self.assertEqual(result, ({v: 0 for v in vertices},
+                                 {vertices[0]: {vertices[1]}, vertices[1]: {vertices[0]}}))
+        self.assertEqual(before, graph.to_json())
+
+        isolated, (v,) = open_graph([Fraction(1, 4)])
+        self.assertIsNone(_find_incremental_flow(isolated, {v: "X"}))
+        self.assertEqual(_find_incremental_flow(isolated, {v: "Y"}),
+                         ({v: 0}, {v: {v}}))
+
+    def test_incremental_finder_uses_ground_measurement_assignment(self):
+        """A ground's explicit Y diagonal can satisfy its homogeneous row."""
+        graph, (u, ground, output) = open_graph(
+            [Fraction(1, 4)] * 3, [(0, 2), (1, 2)], inputs=[0], outputs=[2])
+        graph.set_ground(ground)
+        measurements = {u: "XY", ground: "XY", output: "XY"}
+        self.assertIsNone(_find_incremental_flow(graph, measurements, focus=True))
+        measurements[ground] = "Y"
+        self.assertEqual(_find_incremental_flow(graph, measurements, focus=True),
+                         ({ground: 1, output: 1, u: 0}, {u: {ground, output}}))
+        self.assertEqual(_find_incremental_flow(graph, measurements, focus=False),
+                         ({ground: 1, output: 1, u: 0}, {u: {output}}))
 
     def test_phase_periodicity_and_input_exclusion(self):
         """Odd half-integer phases are Y, but inputs can never self-correct."""

@@ -15,24 +15,27 @@
 # limitations under the License.
 
 from fractions import Fraction
-from typing import Dict, Set, Tuple, Optional
+from typing import Dict, Set, Tuple, Optional, Literal, Mapping
 
 from .linalg import Mat2
 from .graph.base import BaseGraph, VT, ET
 from .utils import phase_is_clifford, phase_is_pauli, vertex_is_zx
 
 
+_Measurement = Literal["XY", "X", "Y"]
+
+
 def gflow(
     g: BaseGraph[VT, ET], focus: bool=False, reverse: bool=False, pauli: bool=False,
     *, method: str="cubic"
 ) -> Optional[Tuple[Dict[VT, int], Dict[VT, Set[VT]]]]:
-    r"""Find gflow or Pauli flow for XY/X/Y measurements.
+    r"""Find gflow with every spider interpreted as an XY measurement.
 
     :param g: A graph-like ZX diagram.
     :param focus: Require focused corrections, including constraints on grounds.
     :param reverse: Reverse the roles of inputs and outputs.
-    :param pauli: Deprecated Pauli-flow mode; use :func:`pauli_flow` instead.
-        Retained for existing callers.
+    :param pauli: Compatibility alias for :func:`pauli_flow` when ``True``.
+        Use that entry point for new Pauli-flow calls.
     :param method: ``cubic`` (default) and ``incremental`` both use incremental
         column elimination; ``legacy`` retains the previous finder.
 
@@ -41,6 +44,73 @@ def gflow(
     homogeneous constraints. Corrections and layers can differ from legacy.
     Ordinary order runs from smaller to larger layers; reverse mode inverts
     numbering.
+
+    Spider phases do not affect XY assignments. With ``pauli=True``, delegate
+    to :func:`pauli_flow`, which infers X and Y assignments from phases.
+    """
+    if pauli:
+        return pauli_flow(g, focus=focus, reverse=reverse, method=method)
+    if method == "legacy":
+        return _gflow_legacy(g, focus=focus, reverse=reverse, pauli=False)
+    if method not in ("cubic", "incremental"):
+        raise ValueError("Unknown flow method: " + method)
+
+    measurements: Dict[VT, _Measurement] = {
+        v: "XY" for v in g.vertices() if vertex_is_zx(g.type(v))
+    }
+    return _find_incremental_flow(g, measurements, focus=focus, reverse=reverse)
+
+
+def pauli_flow(
+    g: BaseGraph[VT, ET], focus: bool=False, reverse: bool=False,
+    *, method: str="cubic"
+) -> Optional[Tuple[Dict[VT, int], Dict[VT, Set[VT]]]]:
+    r"""Find Pauli flow for XY, X, and Y measurements.
+
+    Infer measurement types from spider phases: Pauli phases give X,
+    half-integer Clifford phases give Y, and other phases give XY.
+    Other measurement types are not supported.
+
+    :param g: A graph-like ZX diagram.
+    :param focus: Require focused corrections, including ground constraints.
+    :param reverse: Reverse the roles of inputs and outputs.
+    :param method: ``cubic`` (default) and ``incremental`` both use incremental
+        column elimination; ``legacy`` retains the previous finder.
+    :return: Layers and correction sets, or ``None`` if no flow exists.
+
+    Incremental elimination returns focused corrections even when
+    ``focus=False``. That mode omits ground rows; ``focus=True`` keeps their
+    homogeneous constraints. Corrections and layers can differ from legacy.
+    Ordinary order runs from smaller to larger layers; reverse mode inverts
+    numbering.
+    """
+    if method == "legacy":
+        return _gflow_legacy(g, focus=focus, reverse=reverse, pauli=True)
+    if method not in ("cubic", "incremental"):
+        raise ValueError("Unknown flow method: " + method)
+
+    measurements: Dict[VT, _Measurement] = {}
+    for v in g.vertices():
+        if not vertex_is_zx(g.type(v)):
+            continue
+        phase = g.phase(v) % 2
+        if phase_is_pauli(phase):
+            measurements[v] = "X"
+        elif phase_is_clifford(phase):
+            measurements[v] = "Y"
+        else:
+            measurements[v] = "XY"
+    return _find_incremental_flow(g, measurements, focus=focus, reverse=reverse)
+
+
+def _find_incremental_flow(
+    g: BaseGraph[VT, ET], measurements: Mapping[VT, _Measurement],
+    focus: bool=False, reverse: bool=False
+) -> Optional[Tuple[Dict[VT, int], Dict[VT, Set[VT]]]]:
+    r"""Find focused flow from explicit XY/X/Y assignments.
+
+    ``measurements`` assigns every ZX spider, including outputs and grounds,
+    in graph vertex order. Assignments are authoritative; phases are not read.
 
     For XY/X/Y, the Mitosek--Backens order-demand matrix N consists only of
     zero rows and an identity subblock. Order constraints therefore just
@@ -53,28 +123,15 @@ def gflow(
     each unsolved RHS at most once. Packed integer vectors give O(n^3) bit
     work and O(n^2) matrix bits. See https://arxiv.org/abs/2410.23439 for M/N.
     """
-    if method == "legacy":
-        return _gflow_legacy(g, focus=focus, reverse=reverse, pauli=pauli)
-    if method not in ("cubic", "incremental"):
-        raise ValueError("Unknown flow method: " + method)
-
-    vertices = [v for v in g.vertices() if vertex_is_zx(g.type(v))]
+    vertices = list(measurements)
     vertex_set = set(vertices)
     inputs = {v for b in g.inputs() for v in g.neighbors(b) if v in vertex_set}
     outputs = {v for b in g.outputs() for v in g.neighbors(b) if v in vertex_set}
     if reverse:
         inputs, outputs = outputs, inputs
     processed = outputs | (g.grounds() & vertex_set)
-    paulis = set()
-    ys = set()
-    if pauli:
-        for v in vertices:
-            phase = g.phase(v) % 2
-            if phase_is_pauli(phase):
-                paulis.add(v)
-            elif phase_is_clifford(phase):
-                paulis.add(v)
-                ys.add(v)
+    paulis = {v for v in vertices if measurements[v] in ("X", "Y")}
+    ys = {v for v in vertices if measurements[v] == "Y"}
 
     rows = [v for v in vertices if v not in (outputs if focus else processed)]
     row_index = {v: i for i, v in enumerate(rows)}
@@ -143,25 +200,6 @@ def gflow(
 
     return ({v: layer if reverse else depth - layer for v, layer in layers.items()},
             corrections)
-
-
-def pauli_flow(
-    g: BaseGraph[VT, ET], focus: bool=False, reverse: bool=False,
-    *, method: str="cubic"
-) -> Optional[Tuple[Dict[VT, int], Dict[VT, Set[VT]]]]:
-    r"""Find Pauli flow for XY, X, and Y measurements.
-
-    Infer measurement types from spider phases: Pauli phases give X,
-    half-integer Clifford phases give Y, and other phases give XY.
-    Other measurement types are not supported.
-
-    :param g: A graph-like ZX diagram.
-    :param focus: Require focused corrections, including ground constraints.
-    :param reverse: Reverse the roles of inputs and outputs.
-    :param method: Flow-finding backend; see :func:`gflow`.
-    :return: Layers and correction sets, or ``None`` if no flow exists.
-    """
-    return gflow(g, focus=focus, reverse=reverse, pauli=True, method=method)
 
 
 def _gflow_legacy(
