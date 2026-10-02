@@ -37,7 +37,8 @@ def gflow(
     :param pauli: Compatibility alias for :func:`pauli_flow` when ``True``.
         Use that entry point for new Pauli-flow calls.
     :param method: ``cubic`` (default) and ``incremental`` both use incremental
-        column elimination; ``legacy`` retains the previous finder.
+        column elimination; ``deferred`` solves inputs and X/Y targets only
+        after internal XY targets; ``legacy`` retains the previous finder.
 
     Incremental elimination returns focused corrections even when
     ``focus=False``. That mode omits ground rows; ``focus=True`` keeps their
@@ -52,13 +53,14 @@ def gflow(
         return pauli_flow(g, focus=focus, reverse=reverse, method=method)
     if method == "legacy":
         return _gflow_legacy(g, focus=focus, reverse=reverse, pauli=False)
-    if method not in ("cubic", "incremental"):
+    if method not in ("cubic", "incremental", "deferred"):
         raise ValueError("Unknown flow method: " + method)
 
     measurements: Dict[VT, _Measurement] = {
         v: "XY" for v in g.vertices() if vertex_is_zx(g.type(v))
     }
-    return _find_incremental_flow(g, measurements, focus=focus, reverse=reverse)
+    return _find_incremental_flow(g, measurements, focus=focus, reverse=reverse,
+                                  defer=method == "deferred")
 
 
 def pauli_flow(
@@ -75,7 +77,8 @@ def pauli_flow(
     :param focus: Require focused corrections, including ground constraints.
     :param reverse: Reverse the roles of inputs and outputs.
     :param method: ``cubic`` (default) and ``incremental`` both use incremental
-        column elimination; ``legacy`` retains the previous finder.
+        column elimination; ``deferred`` solves inputs and X/Y targets only
+        after internal XY targets; ``legacy`` retains the previous finder.
     :return: Layers and correction sets, or ``None`` if no flow exists.
 
     Incremental elimination returns focused corrections even when
@@ -86,7 +89,7 @@ def pauli_flow(
     """
     if method == "legacy":
         return _gflow_legacy(g, focus=focus, reverse=reverse, pauli=True)
-    if method not in ("cubic", "incremental"):
+    if method not in ("cubic", "incremental", "deferred"):
         raise ValueError("Unknown flow method: " + method)
 
     measurements: Dict[VT, _Measurement] = {}
@@ -100,12 +103,13 @@ def pauli_flow(
             measurements[v] = "Y"
         else:
             measurements[v] = "XY"
-    return _find_incremental_flow(g, measurements, focus=focus, reverse=reverse)
+    return _find_incremental_flow(g, measurements, focus=focus, reverse=reverse,
+                                  defer=method == "deferred")
 
 
 def _find_incremental_flow(
     g: BaseGraph[VT, ET], measurements: Mapping[VT, _Measurement],
-    focus: bool=False, reverse: bool=False
+    focus: bool=False, reverse: bool=False, *, defer: bool=False
 ) -> Optional[Tuple[Dict[VT, int], Dict[VT, Set[VT]]]]:
     r"""Find focused flow from explicit XY/X/Y assignments.
 
@@ -122,6 +126,11 @@ def _find_incremental_flow(
     Each candidate column is inserted at most once; each new pivot updates
     each unsolved RHS at most once. Packed integer vectors give O(n^3) bit
     work and O(n^2) matrix bits. See https://arxiv.org/abs/2410.23439 for M/N.
+
+    With ``defer=True``, only non-input XY targets are updated during layer
+    construction. Inputs and X/Y targets have zero order-demand rows, so they
+    can share an initial layer and are solved once against the final basis.
+    Their demand rows and initially available X/Y columns are kept throughout.
     """
     vertices = list(measurements)
     vertex_set = set(vertices)
@@ -150,6 +159,10 @@ def _find_incremental_flow(
     residual = [1 << i for i in range(len(rows))]
     solutions = [0] * len(rows)
     active = [i for i, v in enumerate(rows) if v not in processed]
+    deferred = []
+    if defer:
+        deferred = [i for i in active if rows[i] in inputs or rows[i] in paulis]
+        active = [i for i in active if rows[i] not in inputs and rows[i] not in paulis]
     # Each entry is (pivot bit, transformed M column, correction coordinates).
     # Later basis vectors have zero entries at every earlier pivot.
     basis: list[tuple[int, int, int]] = []
@@ -161,7 +174,7 @@ def _find_incremental_flow(
     layers = {v: 0 for v in processed}
     corrections: Dict[VT, Set[VT]] = {}
     depth = 0
-    while active:
+    while active or deferred:
         for j in pending:
             vector, combination = demand[j], 1 << j
             for pivot, column, coordinates in basis:
@@ -177,9 +190,23 @@ def _find_incremental_flow(
                     residual[i] ^= vector
                     solutions[i] ^= combination
 
-        solved = [i for i in active if not residual[i]]
-        if not solved:
-            return None
+        if active:
+            solved = [i for i in active if not residual[i]]
+            if not solved:
+                # Deferred targets cannot unlock any additional columns.
+                return None
+        else:
+            # The last XY layer's pending columns were inserted above. Solve
+            # every deferred unit RHS once, retaining all focusing constraints.
+            active, deferred = deferred, []
+            for i in active:
+                for pivot, column, coordinates in basis:
+                    if residual[i] & pivot:
+                        residual[i] ^= column
+                        solutions[i] ^= coordinates
+                if residual[i]:
+                    return None
+            solved = active
         depth += 1
         pending = []
         for i in solved:

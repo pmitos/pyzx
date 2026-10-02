@@ -153,16 +153,17 @@ class TestGFlow(unittest.TestCase):
                             graph, _ = open_graph(
                                 [phases[labels.get(v, 'XY')] for v in range(n)],
                                 edges, inputs, outputs)
-                            for focus in (False, True):
+                            for focus, method in product((False, True), ("incremental", "deferred")):
                                 with self.subTest(n=n, edges=edges, inputs=inputs,
-                                                  outputs=outputs, labels=labels, focus=focus):
-                                    result = pauli_flow(graph, focus=focus)
+                                                  outputs=outputs, labels=labels,
+                                                  focus=focus, method=method):
+                                    result = pauli_flow(graph, focus=focus, method=method)
                                     self.assertEqual(result is not None, expected)
                                     if result is not None:
                                         self.assert_valid_flow(graph, result, True, False, focus)
                                     # All-XY patterns also exercise ordinary gflow.
                                     if all(label == 'XY' for label in labels_tuple):
-                                        ordinary = gflow(graph, focus=focus)
+                                        ordinary = gflow(graph, focus=focus, method=method)
                                         self.assertEqual(ordinary is not None, expected)
                                         if ordinary is not None:
                                             self.assert_valid_flow(graph, ordinary, False, False, focus)
@@ -200,8 +201,9 @@ class TestGFlow(unittest.TestCase):
             edges = [(row, 3 + j) for j, support in enumerate(column_order) for row in support]
             graph, _ = open_graph([Fraction(1, 4)] * 6, edges,
                                   inputs=[0, 1, 2], outputs=[3, 4, 5])
-            with self.subTest(column_order=column_order):
-                self.assert_valid_flow(graph, gflow(graph), False, False, False)
+            for method in ("incremental", "deferred"):
+                with self.subTest(column_order=column_order, method=method):
+                    self.assert_valid_flow(graph, gflow(graph, method=method), False, False, False)
 
     def test_dense_rectangular_system_across_packed_word_boundaries(self):
         """Dense corrections retain coordinates beyond machine-word widths."""
@@ -215,10 +217,12 @@ class TestGFlow(unittest.TestCase):
         edges.extend((i, 2 * n) for i, row in enumerate(rows) if 0 in row)
         graph, vertices = open_graph([Fraction(1, 4)] * (2 * n + 2), edges,
                                      inputs=range(n), outputs=range(n, 2 * n + 2))
-        result = gflow(graph)
-        self.assert_valid_flow(graph, result, False, False, False)
-        if result is not None:
-            self.assertTrue(any(vertices[2 * n - 1] in c for c in result[1].values()))
+        for method in ("incremental", "deferred"):
+            with self.subTest(method=method):
+                result = gflow(graph, method=method)
+                self.assert_valid_flow(graph, result, False, False, False)
+                if result is not None:
+                    self.assertTrue(any(vertices[2 * n - 1] in c for c in result[1].values()))
 
     def test_unequal_io_rank_deficient_system(self):
         """Extra outputs alone do not ensure the existence of a right inverse."""
@@ -238,7 +242,7 @@ class TestGFlow(unittest.TestCase):
         """The explicit API preserves the existing Pauli-flow mode."""
         graph, _ = open_graph([Fraction(1, 2)])
         self.assertIsNone(gflow(graph))
-        for method in ("cubic", "incremental", "legacy"):
+        for method in ("cubic", "incremental", "deferred", "legacy"):
             with self.subTest(method=method):
                 result = pauli_flow(graph, method=method)
                 self.assertEqual(result, gflow(graph, pauli=True, method=method))
@@ -415,13 +419,81 @@ class TestGFlow(unittest.TestCase):
                             result = gflow(graph, focus, reverse, pauli)
                             incremental = gflow(graph, focus, reverse, pauli,
                                                 method="incremental")
+                            deferred = gflow(graph, focus, reverse, pauli,
+                                             method="deferred")
                             legacy = gflow(graph, focus, reverse, pauli, method="legacy")
                             self.assertEqual(result is None, legacy is None)
                             self.assertEqual(result, incremental)
+                            self.assertEqual(result is None, deferred is None)
+                            if deferred is not None:
+                                self.assert_valid_flow(graph, deferred, pauli, reverse, focus)
                             if incremental is not None:
                                 self.assert_valid_flow(graph, incremental, pauli, reverse, focus)
                             if result is not None:
                                 self.assert_valid_flow(graph, result, pauli, reverse, focus)
+
+    def test_deferred_targets_share_initial_layer(self):
+        """Inputs, an isolated Y, and mutually correcting Xs all wait until last."""
+        graph, vertices = open_graph(
+            [Fraction(1, 4)] * 3 + [Fraction(1, 2), Fraction(0), Fraction(0)],
+            [(0, 1), (1, 2), (4, 5)], inputs=[0], outputs=[2])
+        result = pauli_flow(graph, method="deferred")
+        self.assert_valid_flow(graph, result, True, False, False)
+        if result is not None:
+            layers, corrections = result
+            self.assertEqual({layers[vertices[i]] for i in (0, 3, 4, 5)}, {0})
+            self.assertGreater(layers[vertices[1]], 0)
+            self.assertEqual(corrections[vertices[3]], {vertices[3]})
+            self.assertEqual(corrections[vertices[4]], {vertices[5]})
+            self.assertEqual(corrections[vertices[5]], {vertices[4]})
+
+    def test_deferred_uses_last_xy_columns(self):
+        """A deferred target may require a column released by the final XY layer."""
+        for phase, inputs in ((Fraction(0), []), (Fraction(0), [0]),
+                              (Fraction(1, 2), [0]), (Fraction(1, 4), [0])):
+            for backend, reverse, focus in product(('simple', 'multigraph'),
+                                                    (False, True), (False, True)):
+                # Reverse uses the same effective boundaries but inverted layers.
+                graph, vertices = open_graph(
+                    [phase, Fraction(1, 4), Fraction(1, 4)], [(0, 1), (1, 2)],
+                    inputs=[2] if reverse else inputs,
+                    outputs=inputs if reverse else [2], backend=backend)
+                with self.subTest(phase=phase, inputs=inputs, backend=backend,
+                                  reverse=reverse, focus=focus):
+                    result = pauli_flow(graph, reverse=reverse, focus=focus,
+                                        method="deferred")
+                    self.assert_valid_flow(graph, result, True, reverse, focus)
+                    if result is not None:
+                        self.assertIn(vertices[1], result[1][vertices[0]])
+
+    def test_deferred_failure_before_or_after_xy_layers(self):
+        """Solvable Paulis do not fix blocked XYs; deferred demands can also fail."""
+        cases = [
+            # Isolated Y solves immediately, but the XY pair has a cyclic order.
+            ([Fraction(1, 4), Fraction(1, 4), Fraction(1, 2)], [(0, 1)], []),
+            # The XY connected to an output solves, but isolated X cannot.
+            ([Fraction(1, 4), Fraction(1, 4), Fraction(0)], [(0, 1)], [1]),
+        ]
+        for phases, edges, outputs in cases:
+            graph, _ = open_graph(phases, edges, outputs=outputs)
+            self.assertIsNone(pauli_flow(graph, method="incremental"))
+            self.assertIsNone(pauli_flow(graph, method="deferred"))
+
+    def test_deferred_grounds_and_no_measurements(self):
+        """Deferral retains homogeneous ground rows without making them targets."""
+        graph, (u, ground, output) = open_graph(
+            [Fraction(1, 4), Fraction(1, 2), Fraction(1, 4)],
+            [(0, 2), (1, 2)], inputs=[0], outputs=[2])
+        graph.set_ground(ground)
+        for focus in (False, True):
+            result = pauli_flow(graph, focus=focus, method="deferred")
+            self.assert_valid_flow(graph, result, True, False, focus)
+            self.assertEqual(result[1][u], {ground, output} if focus else {output})
+        graph.set_phase(ground, Fraction(1, 4))
+        self.assertIsNone(pauli_flow(graph, focus=True, method="deferred"))
+        self.assertEqual(gflow(Graph(), method="deferred"), ({}, {}))
+        graph, vertices = open_graph([Fraction(1, 4)] * 2, inputs=[0], outputs=[0, 1])
+        self.assertEqual(gflow(graph, method="deferred"), ({v: 0 for v in vertices}, {}))
 
     def test_grounds(self):
         """Ground constraints follow PyZX's focus flag convention."""
@@ -457,6 +529,7 @@ class TestGFlow(unittest.TestCase):
             graph.add_edge((v, b), EdgeType.SIMPLE)
             setter((b,))
         self.assert_valid_flow(graph, gflow(graph, method="incremental"), False, False, False)
+        self.assert_valid_flow(graph, gflow(graph, method="deferred"), False, False, False)
         self.assert_valid_flow(graph, gflow(graph), False, False, False)
 
     def test_empty_and_isolated(self):
