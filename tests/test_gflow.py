@@ -159,12 +159,19 @@ class TestGFlow(unittest.TestCase):
                                                   focus=focus, method=method):
                                     result = pauli_flow(graph, focus=focus, method=method)
                                     self.assertEqual(result is not None, expected)
+                                    layers = pauli_flow(graph, focus=focus, method=method,
+                                                        layers_only=True)
+                                    self.assertEqual(layers is not None, expected)
+                                    self.assertEqual(layers, None if result is None else result[0])
                                     if result is not None:
                                         self.assert_valid_flow(graph, result, True, False, focus)
                                     # All-XY patterns also exercise ordinary gflow.
                                     if all(label == 'XY' for label in labels_tuple):
                                         ordinary = gflow(graph, focus=focus, method=method)
                                         self.assertEqual(ordinary is not None, expected)
+                                        self.assertEqual(
+                                            gflow(graph, focus=focus, method=method, layers_only=True),
+                                            None if ordinary is None else ordinary[0])
                                         if ordinary is not None:
                                             self.assert_valid_flow(graph, ordinary, False, False, focus)
 
@@ -204,6 +211,8 @@ class TestGFlow(unittest.TestCase):
             for method in ("incremental", "deferred"):
                 with self.subTest(column_order=column_order, method=method):
                     self.assert_valid_flow(graph, gflow(graph, method=method), False, False, False)
+                    full = gflow(graph, method=method)
+                    self.assertEqual(gflow(graph, method=method, layers_only=True), full[0])
 
     def test_dense_rectangular_system_across_packed_word_boundaries(self):
         """Dense corrections retain coordinates beyond machine-word widths."""
@@ -223,6 +232,7 @@ class TestGFlow(unittest.TestCase):
                 self.assert_valid_flow(graph, result, False, False, False)
                 if result is not None:
                     self.assertTrue(any(vertices[2 * n - 1] in c for c in result[1].values()))
+                    self.assertEqual(gflow(graph, method=method, layers_only=True), result[0])
 
     def test_unequal_io_rank_deficient_system(self):
         """Extra outputs alone do not ensure the existence of a right inverse."""
@@ -425,12 +435,59 @@ class TestGFlow(unittest.TestCase):
                             self.assertEqual(result is None, legacy is None)
                             self.assertEqual(result, incremental)
                             self.assertEqual(result is None, deferred is None)
+                            for method, full in (("incremental", incremental), ("deferred", deferred)):
+                                self.assertEqual(
+                                    gflow(graph, focus, reverse, pauli, method=method, layers_only=True),
+                                    None if full is None else full[0])
                             if deferred is not None:
                                 self.assert_valid_flow(graph, deferred, pauli, reverse, focus)
                             if incremental is not None:
                                 self.assert_valid_flow(graph, incremental, pauli, reverse, focus)
                             if result is not None:
                                 self.assert_valid_flow(graph, result, pauli, reverse, focus)
+
+    def test_layers_only_entry_points_and_empty_graph(self):
+        """The keyword returns layers directly, and None alone denotes no flow."""
+        graph, _ = open_graph([Fraction(1, 4)] * 3, [(0, 1), (1, 2)],
+                              inputs=[0], outputs=[2])
+        for method in ("cubic", "incremental", "deferred"):
+            for finder in (gflow, pauli_flow):
+                with self.subTest(method=method, finder=finder.__name__):
+                    full = finder(graph, method=method)
+                    self.assertEqual(full, finder(graph, method=method, layers_only=False))
+                    layers = finder(graph, method=method, layers_only=True)
+                    self.assertIsInstance(layers, dict)
+                    self.assertEqual(layers, full[0])
+                    self.assertEqual(finder(Graph(), method=method, layers_only=True), {})
+            isolated_y, _ = open_graph([Fraction(1, 2)])
+            self.assertIsNone(gflow(isolated_y, method=method, layers_only=True))
+            self.assertEqual(pauli_flow(isolated_y, method=method, layers_only=True),
+                             gflow(isolated_y, pauli=True, method=method, layers_only=True))
+        for finder in (gflow, pauli_flow):
+            with self.assertRaisesRegex(ValueError, "layers_only"):
+                finder(graph, method="legacy", layers_only=True)
+        with self.assertRaisesRegex(ValueError, "layers_only"):
+            gflow(graph, pauli=True, method="legacy", layers_only=True)
+
+    def test_layers_only_ground_constraints_and_explicit_assignments(self):
+        """Skipping witnesses retains explicit labels and homogeneous ground rows."""
+        graph, (u, ground, output) = open_graph(
+            [Fraction(1, 4)] * 3, [(0, 2), (1, 2)], inputs=[0], outputs=[2])
+        graph.set_ground(ground)
+        before = graph.to_json()
+        measurements = {u: "XY", ground: "Y", output: "XY"}
+        for defer, focus in product((False, True), repeat=2):
+            with self.subTest(defer=defer, focus=focus):
+                full = _find_incremental_flow(graph, measurements, focus=focus, defer=defer)
+                self.assertIsNotNone(full)
+                self.assertEqual(
+                    _find_incremental_flow(graph, measurements, focus=focus, defer=defer,
+                                           layers_only=True), full[0])
+                blocked = measurements.copy()
+                blocked[ground] = "XY"
+                self.assertIsNone(_find_incremental_flow(
+                    graph, blocked, focus=True, defer=defer, layers_only=True))
+        self.assertEqual(before, graph.to_json())
 
     def test_deferred_targets_share_initial_layer(self):
         """Inputs, an isolated Y, and mutually correcting Xs all wait until last."""
@@ -531,6 +588,9 @@ class TestGFlow(unittest.TestCase):
         self.assert_valid_flow(graph, gflow(graph, method="incremental"), False, False, False)
         self.assert_valid_flow(graph, gflow(graph, method="deferred"), False, False, False)
         self.assert_valid_flow(graph, gflow(graph), False, False, False)
+        for method in ("incremental", "deferred"):
+            full = gflow(graph, method=method)
+            self.assertEqual(gflow(graph, method=method, layers_only=True), full[0])
 
     def test_empty_and_isolated(self):
         """Empty graphs and diagonal-only Y corrections need no graph edges."""

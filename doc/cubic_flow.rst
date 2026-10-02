@@ -25,6 +25,20 @@ can differ from legacy.
 X/Y targets until after all internal XY targets. The default remains the
 original incremental method so the two variants can be compared directly.
 
+Use ``layers_only=True`` when correction sets are unnecessary. This keyword
+works with ``cubic``, ``incremental`` and ``deferred`` and returns a layer
+dictionary on success, or ``None`` on failure. Without it, the return value
+remains ``(layers, corrections)`` or ``None``. ``legacy`` rejects this option.
+
+For example::
+
+    layers = pauli_flow(g, method="incremental", layers_only=True)
+    has_flow = layers is not None
+
+Check against ``None`` for existence: an empty graph has flow and returns
+an empty layer dictionary, which is false in a Boolean context. Ordinary
+gflow supports the same keyword, as does the ``gflow(..., pauli=True)`` alias.
+
 Why XY/X/Y permits incremental elimination
 -------------------------------------------
 
@@ -63,6 +77,25 @@ Each column is inserted at most once and each pivot updates each unsolved
 target at most once. These are O(n^2) packed-vector operations on O(n)-bit
 integers: O(n^3) bit work and O(n^2) matrix bits. Returned correction sets
 have O(n^2) entries in the worst case.
+
+Layers without corrections
+--------------------------
+
+Solvability depends only on whether each unit right-hand side reduces to zero
+against the basis of permitted matrix columns. The correction coordinates
+carried along during elimination provide witnesses but do not affect pivot
+selection, residuals, or which vertices are solved together.
+
+With ``layers_only=True``, skip creation and XOR updates of packed column
+combinations and target solutions, and skip correction-set decoding. Basis
+entries keep a zero placeholder for coordinates; the solution list is empty.
+All demand rows and residual operations remain present, including homogeneous
+ground constraints. The returned layers and existence decision are identical
+to the same method with corrections enabled, including in deferred mode.
+
+The O(n^3) bit-work and O(n^2) storage bounds remain unchanged. This removes
+witness bookkeeping and decoding; its runtime benefit needs benchmarking.
+Layers-only results do not include correction witnesses for external checking.
 
 Deferred targets
 ----------------
@@ -113,3 +146,6 @@ failure, grounds, wide packed vectors, many layers, both graph backends and
 Pauli-web callers.
 Deferred cases also check initial-layer placement and corrections requiring
 the columns released by the last internal XY layer.
+Layers-only results are checked against the full finders' exact layers and
+existence decisions across the exhaustive cases, seeded modes, grounds,
+explicit assignments, wide vectors, many layers and the compatibility alias.

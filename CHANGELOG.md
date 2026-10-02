@@ -12,6 +12,7 @@ Hence, occasionally changes will be backwards incompatible (although they will a
 - Incremental cubic flow finding for XY, X, and Y measurements, with the previous finder available as `method="legacy"`.
 - `pyzx.gflow.pauli_flow` as the explicit entry point for Pauli flow on XY, X, and Y measurements.
 - Optional `method="deferred"` incremental flow finding, solving inputs and X/Y targets once after internal XY targets.
+- Optional `layers_only=True` on incremental flow finders, returning layers without tracking or decoding correction witnesses.
 
 ### Deprecated
 - `gflow(..., pauli=True)` remains supported for compatibility; use `pauli_flow(...)` for new Pauli-flow calls.
