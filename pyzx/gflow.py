@@ -61,10 +61,9 @@ def gflow(
     :param pauli: Compatibility alias for :func:`pauli_flow` when ``True``.
         Use that entry point for new Pauli-flow calls.
     :param method: ``cubic`` (default) and ``incremental`` both use incremental
-        column elimination; ``deferred`` solves inputs and X/Y targets only
-        after internal XY targets; ``legacy`` retains the previous finder.
+        column elimination; ``legacy`` retains the previous finder.
     :param layers_only: Skip correction-coordinate tracking and return only
-        layers when ``True``. Supported by all incremental methods.
+        layers when ``True``. Supported by ``cubic`` and ``incremental``.
     :return: ``(layers, corrections)`` by default, a layer dictionary with
         ``layers_only=True``, or ``None`` if no flow exists. An empty graph
         has flow and gives an empty dictionary in layers-only mode.
@@ -85,14 +84,14 @@ def gflow(
         if layers_only:
             raise ValueError("layers_only is not supported by the legacy finder")
         return _gflow_legacy(g, focus=focus, reverse=reverse, pauli=False)
-    if method not in ("cubic", "incremental", "deferred"):
+    if method not in ("cubic", "incremental"):
         raise ValueError("Unknown flow method: " + method)
 
     measurements: Dict[VT, _Measurement] = {
         v: "XY" for v in g.vertices() if vertex_is_zx(g.type(v))
     }
     return _find_incremental_flow(g, measurements, focus=focus, reverse=reverse,
-                                  defer=method == "deferred", layers_only=layers_only)
+                                  layers_only=layers_only)
 
 
 @overload
@@ -130,10 +129,9 @@ def pauli_flow(
     :param focus: Require focused corrections, including ground constraints.
     :param reverse: Reverse the roles of inputs and outputs.
     :param method: ``cubic`` (default) and ``incremental`` both use incremental
-        column elimination; ``deferred`` solves inputs and X/Y targets only
-        after internal XY targets; ``legacy`` retains the previous finder.
+        column elimination; ``legacy`` retains the previous finder.
     :param layers_only: Skip correction-coordinate tracking and return only
-        layers when ``True``. Supported by all incremental methods.
+        layers when ``True``. Supported by ``cubic`` and ``incremental``.
     :return: ``(layers, corrections)`` by default, a layer dictionary with
         ``layers_only=True``, or ``None`` if no flow exists. An empty graph
         has flow and gives an empty dictionary in layers-only mode.
@@ -148,7 +146,7 @@ def pauli_flow(
         if layers_only:
             raise ValueError("layers_only is not supported by the legacy finder")
         return _gflow_legacy(g, focus=focus, reverse=reverse, pauli=True)
-    if method not in ("cubic", "incremental", "deferred"):
+    if method not in ("cubic", "incremental"):
         raise ValueError("Unknown flow method: " + method)
 
     measurements: Dict[VT, _Measurement] = {}
@@ -163,12 +161,12 @@ def pauli_flow(
         else:
             measurements[v] = "XY"
     return _find_incremental_flow(g, measurements, focus=focus, reverse=reverse,
-                                  defer=method == "deferred", layers_only=layers_only)
+                                  layers_only=layers_only)
 
 
 def _find_incremental_flow(
     g: BaseGraph[VT, ET], measurements: Mapping[VT, _Measurement],
-    focus: bool=False, reverse: bool=False, *, defer: bool=False, layers_only: bool=False
+    focus: bool=False, reverse: bool=False, *, layers_only: bool=False
 ) -> _Result[VT]:
     r"""Find focused flow from explicit XY/X/Y assignments.
 
@@ -185,11 +183,6 @@ def _find_incremental_flow(
     Each candidate column is inserted at most once; each new pivot updates
     each unsolved RHS at most once. Packed integer vectors give O(n^3) bit
     work and O(n^2) matrix bits. See https://arxiv.org/abs/2410.23439 for M/N.
-
-    With ``defer=True``, only non-input XY targets are updated during layer
-    construction. Inputs and X/Y targets have zero order-demand rows, so they
-    can share an initial layer and are solved once against the final basis.
-    Their demand rows and initially available X/Y columns are kept throughout.
 
     With ``layers_only=True``, residual reduction and layer construction are
     identical, but no correction-coordinate vectors or sets are constructed.
@@ -221,10 +214,6 @@ def _find_incremental_flow(
     residual = [1 << i for i in range(len(rows))]
     solutions = [] if layers_only else [0] * len(rows)
     active = [i for i, v in enumerate(rows) if v not in processed]
-    deferred = []
-    if defer:
-        deferred = [i for i in active if rows[i] in inputs or rows[i] in paulis]
-        active = [i for i in active if rows[i] not in inputs and rows[i] not in paulis]
     # Each entry is (pivot bit, transformed M column, correction coordinates).
     # Coordinates stay zero in layers-only mode.
     # Later basis vectors have zero entries at every earlier pivot.
@@ -237,7 +226,7 @@ def _find_incremental_flow(
     layers = {v: 0 for v in processed}
     corrections: Dict[VT, Set[VT]] = {}
     depth = 0
-    while active or deferred:
+    while active:
         for j in pending:
             vector = demand[j]
             combination = 0 if layers_only else 1 << j
@@ -256,24 +245,9 @@ def _find_incremental_flow(
                     if not layers_only:
                         solutions[i] ^= combination
 
-        if active:
-            solved = [i for i in active if not residual[i]]
-            if not solved:
-                # Deferred targets cannot unlock any additional columns.
-                return None
-        else:
-            # The last XY layer's pending columns were inserted above. Solve
-            # every deferred unit RHS once, retaining all focusing constraints.
-            active, deferred = deferred, []
-            for i in active:
-                for pivot, column, coordinates in basis:
-                    if residual[i] & pivot:
-                        residual[i] ^= column
-                        if not layers_only:
-                            solutions[i] ^= coordinates
-                if residual[i]:
-                    return None
-            solved = active
+        solved = [i for i in active if not residual[i]]
+        if not solved:
+            return None
         depth += 1
         pending = []
         for i in solved:

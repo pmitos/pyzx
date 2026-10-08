@@ -21,12 +21,8 @@ packed Python integers without new dependencies. It returns focused
 corrections even when ``focus=False``; correction choices and layer numbers
 can differ from legacy.
 
-``method="deferred"`` selects an experimental variant that defers inputs and
-X/Y targets until after all internal XY targets. The default remains the
-original incremental method so the two variants can be compared directly.
-
 Use ``layers_only=True`` when correction sets are unnecessary. This keyword
-works with ``cubic``, ``incremental`` and ``deferred`` and returns a layer
+works with ``cubic`` and ``incremental`` and returns a layer
 dictionary on success, or ``None`` on failure. Without it, the return value
 remains ``(layers, corrections)`` or ``None``. ``legacy`` rejects this option.
 
@@ -91,38 +87,11 @@ combinations and target solutions, and skip correction-set decoding. Basis
 entries keep a zero placeholder for coordinates; the solution list is empty.
 All demand rows and residual operations remain present, including homogeneous
 ground constraints. The returned layers and existence decision are identical
-to the same method with corrections enabled, including in deferred mode.
+to incremental flow finding with corrections enabled.
 
 The O(n^3) bit-work and O(n^2) storage bounds remain unchanged. This removes
 witness bookkeeping and decoding; its runtime benefit needs benchmarking.
 Layers-only results do not include correction witnesses for external checking.
-
-Deferred targets
-----------------
-
-In the deferred variant, only measured non-input XY vertices participate in
-the growing-basis layer loop. Inputs and X/Y vertices have zero rows in N:
-input correction coordinates are absent, and X/Y measurements impose no
-order demand on their own correction coordinates. They can therefore share
-an initial measurement layer. Their M rows remain constraints throughout;
-non-input X/Y columns remain available from the start.
-
-If no internal XY target is solvable while any remain, return failure
-immediately. Solving a deferred target could not release another column:
-an input has none, and an X/Y column is already available.
-
-After all internal XY targets are solved, insert the columns released by
-the last XY layer. Reduce each deferred unit right-hand side against the
-final basis once, recording its correction coordinates. A nonzero residual
-means failure; otherwise assign all deferred targets one initial layer.
-Reverse mode uses the swapped input/output roles and inverted numbering.
-Outputs and grounds never become deferred targets.
-
-The asymptotic bounds are unchanged. Deferral avoids repeated target scans
-and deferred residual updates before an early XY failure. Successful cases
-do not necessarily use fewer XORs, and may need the last XY columns that the
-original finder could leave unused. Runtime benefit requires benchmarking;
-valid correction choices and layers can differ between the variants.
 
 Grounds and numbering
 --------------------
@@ -140,12 +109,10 @@ Verification
 
 Tests enumerate all 4,233 graph/input/output/XY-X-Y combinations through
 three vertices against the Pauli-flow axioms directly. Other tests compare
-both incremental variants and the legacy finder on seeded graphs,
+the incremental and legacy finders on seeded graphs,
 independently check returned correction witnesses, and cover rank and order
 failure, grounds, wide packed vectors, many layers, both graph backends and
 Pauli-web callers.
-Deferred cases also check initial-layer placement and corrections requiring
-the columns released by the last internal XY layer.
 Layers-only results are checked against the full finders' exact layers and
 existence decisions across the exhaustive cases, seeded modes, grounds,
 explicit assignments, wide vectors, many layers and the compatibility alias.
