@@ -38,6 +38,8 @@ For compatibility, the following are still available:
 Algorithm overview
 ------------------
 
+The following overview assumes a diagram without ground generators.
+
 The main construction finds :math:`C` layer by layer, starting from the outputs.
 
 The main idea follows the algebraic formulation by Mitosek and Backens, DOI
