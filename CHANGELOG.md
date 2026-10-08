@@ -9,10 +9,16 @@ Hence, occasionally changes will be backwards incompatible (although they will a
 ## [Unreleased]
 
 ### Added
+- Incremental cubic flow finding for XY, X, and Y measurements, with the previous finder available as `method="legacy"`.
+- `pyzx.gflow.pauli_flow` as the explicit entry point for Pauli flow on XY, X, and Y measurements.
+- Optional `layers_only=True` on incremental flow finders, returning layers without tracking or decoding correction witnesses.
 - The X-H bialgebra rule now supports H-box with phases and complex labels. Automatic simplification remains restricted to standard H-boxes. (by @RazinShaikh)
 
 ### Changed
 - `simplify.full_reduce` now replaces arity 2 H-boxes with Hadamard edges and fuses arity 1 H-boxes into adjacent Z spiders. This is equivalent to calling `hsimplify.from_hypergraph_form` beforehand in older versions. (by @96-LB)
+
+### Deprecated
+- `gflow(..., pauli=True)` remains supported for compatibility; use `pauli_flow(...)` for new Pauli-flow calls.
 
 ### Fixed
 - `graph_to_circuit()` in `graphparser.py` now raises a `NotImplementedError` when extracting conditional gates instead of silently returning a circuit with potentially incorrect gate ordering (by @akshaysoftware).
