@@ -16,6 +16,8 @@
 
 import unittest
 import random
+import subprocess
+import sys
 from fractions import Fraction
 from itertools import combinations, permutations, product
 from unittest.mock import patch
@@ -266,6 +268,15 @@ class TestGFlow(unittest.TestCase):
         """Historical imports retain the canonical functions and their options."""
         self.assertIs(compatibility_gflow.gflow, gflow)
         self.assertIs(compatibility_gflow.pauli_flow, pauli_flow)
+        # Check a fresh import, without this test module's explicit imports.
+        result = subprocess.run(
+            [sys.executable, "-c",
+             "import pyzx as zx\n"
+             "from pyzx.flow import gflow, pauli_flow\n"
+             "assert zx.gflow.gflow is gflow\n"
+             "assert zx.gflow.pauli_flow is pauli_flow\n"],
+            capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_pauli_flow_entry_point(self):
         """The explicit API preserves the existing Pauli-flow mode."""
