@@ -28,7 +28,7 @@ from pyzx.flow import gflow, pauli_flow, _find_incremental_flow
 from pyzx.graph import Graph
 from pyzx.pauliweb import compute_pauli_webs
 from pyzx.utils import EdgeType, VertexType
-from tests.flow_fixture import load_flow_fixture
+from tests.benchmark_flow import make_flow_graph
 
 
 def brute_force_pauli_flow(n, edges, inputs, outputs, labels):
@@ -179,9 +179,9 @@ class TestGFlow(unittest.TestCase):
                                         if ordinary is not None:
                                             self.assert_valid_flow(graph, ordinary, False, False, focus)
 
-    def test_archived_200_vertex_pauli_flow(self):
+    def test_large_pauli_flow(self):
         """A fixed mixed-Pauli example gives valid full and layers-only results."""
-        graph = load_flow_fixture()
+        graph = make_flow_graph()
         self.assertEqual(graph.num_vertices(), 228)
         self.assertEqual(graph.num_edges(), 1655 + 28)
         self.assertEqual(len(graph.inputs()), 14)
