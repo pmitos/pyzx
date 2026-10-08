@@ -121,3 +121,25 @@ Pauli-web callers.
 Layers-only results are checked against the full finders' exact layers and
 existence decisions across the exhaustive cases, seeded modes, grounds,
 explicit assignments, wide vectors, many layers and the compatibility alias.
+
+Reproducing a performance example
+--------------------------------
+
+The fixed ``XY_X_Y/n00200-r00`` example from UnlabelledOpenGraphs is included
+as ``tests/data/flow/xy_x_y_n200_r00.json``. It has 200 spiders and 28 explicit
+input/output boundary vertices. Ordinary tests check its incremental witness,
+layers-only result, and all-XY failure without running the slow legacy finder
+or asserting a runtime bound.
+
+From a source checkout, run the optional comparison::
+
+    python -m tests.benchmark_flow --repeats 3 --output flow-benchmark.json
+
+Both methods use ``pauli_flow(..., focus=True)`` with full correction results,
+the same interpreter and graph, and alternating call order. Only finder calls
+are timed. Loading, graph construction, warm-up, mutation checks and independent
+witness validation are excluded. The JSON report records every repetition,
+wall and CPU medians, source/fixture hashes, and the runtime environment.
+Timings illustrate this fixed instance; they do not establish performance on
+arbitrary graphs. Fixture provenance is documented in
+``tests/data/flow/README.md``.
