@@ -21,7 +21,8 @@ from itertools import combinations, permutations, product
 from unittest.mock import patch
 
 from pyzx.circuit import Circuit
-from pyzx.gflow import gflow, pauli_flow, _find_incremental_flow
+from pyzx import gflow as compatibility_gflow
+from pyzx.flow import gflow, pauli_flow, _find_incremental_flow
 from pyzx.graph import Graph
 from pyzx.pauliweb import compute_pauli_webs
 from pyzx.utils import EdgeType, VertexType
@@ -244,6 +245,11 @@ class TestGFlow(unittest.TestCase):
             graph, _ = open_graph(phases, [(0, 1)])
             self.assertIsNone(gflow(graph, pauli=False))
             self.assert_valid_flow(graph, gflow(graph, pauli=True), True, False, False)
+
+    def test_gflow_module_import_compatibility(self):
+        """Historical imports retain the canonical functions and their options."""
+        self.assertIs(compatibility_gflow.gflow, gflow)
+        self.assertIs(compatibility_gflow.pauli_flow, pauli_flow)
 
     def test_pauli_flow_entry_point(self):
         """The explicit API preserves the existing Pauli-flow mode."""

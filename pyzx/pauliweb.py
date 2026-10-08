@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-from .gflow import pauli_flow
+from .flow import pauli_flow
 from .utils import EdgeType, VertexType, vertex_is_zx, phase_is_clifford
 from .graph.base import BaseGraph, VT, ET
 

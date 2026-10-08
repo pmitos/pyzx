@@ -1,10 +1,13 @@
 Incremental flow finding for XY, X and Y
 ========================================
 
-Use ``pyzx.gflow.gflow`` for ordinary XY gflow and ``pyzx.gflow.pauli_flow``
+Use ``pyzx.flow.gflow`` for ordinary XY gflow and ``pyzx.flow.pauli_flow``
 for Pauli flow with XY, X and Y measurements. The latter infers X and Y from
 spider phases; other measurement types are not supported. The old
 ``gflow(..., pauli=True)`` call delegates to ``pauli_flow`` for compatibility.
+Both entry points and the auxiliary finder live in ``pyzx/flow.py``.
+The historical ``pyzx.gflow`` module re-exports the public entry points so
+existing imports continue to work.
 
 Each entry point prepares explicit measurement assignments before calling
 the shared auxiliary ``_find_incremental_flow``. ``gflow`` assigns XY to
@@ -27,6 +30,8 @@ dictionary on success, or ``None`` on failure. Without it, the return value
 remains ``(layers, corrections)`` or ``None``. ``legacy`` rejects this option.
 
 For example::
+
+    from pyzx.flow import pauli_flow
 
     layers = pauli_flow(g, method="incremental", layers_only=True)
     has_flow = layers is not None
