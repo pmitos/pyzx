@@ -15,6 +15,7 @@
 # limitations under the License.
 
 from fractions import Fraction
+import warnings
 from typing import Dict, List, Set, Tuple, Optional, Literal, Mapping, Union, overload
 
 from .linalg import Mat2
@@ -30,94 +31,117 @@ _Result = Optional[Union[_Flow[VT], _Layers[VT]]]
 
 @overload
 def gflow(
-    g: BaseGraph[VT, ET], focus: bool=False, reverse: bool=False, pauli: bool=False,
-    *, method: Literal["cubic", "legacy"]="cubic", layers_only: Literal[False]=False
+    g: BaseGraph[VT, ET], focus: Optional[bool]=None, reverse: bool=False,
+    pauli: bool=False, *, method: Literal["cubic", "legacy"]="cubic",
+    include_ground_constraints: Optional[bool]=None,
+    layers_only: Literal[False]=False
 ) -> Optional[_Flow[VT]]: ...
 
 
 @overload
 def gflow(
-    g: BaseGraph[VT, ET], focus: bool=False, reverse: bool=False, pauli: bool=False,
-    *, method: Literal["cubic", "legacy"]="cubic", layers_only: Literal[True]
+    g: BaseGraph[VT, ET], focus: Optional[bool]=None, reverse: bool=False,
+    pauli: bool=False, *, method: Literal["cubic", "legacy"]="cubic",
+    include_ground_constraints: Optional[bool]=None,
+    layers_only: Literal[True]
 ) -> Optional[_Layers[VT]]: ...
 
 
 @overload
 def gflow(
-    g: BaseGraph[VT, ET], focus: bool=False, reverse: bool=False, pauli: bool=False,
-    *, method: Literal["cubic", "legacy"]="cubic", layers_only: bool
+    g: BaseGraph[VT, ET], focus: Optional[bool]=None, reverse: bool=False,
+    pauli: bool=False, *, method: Literal["cubic", "legacy"]="cubic",
+    include_ground_constraints: Optional[bool]=None,
+    layers_only: bool
 ) -> _Result[VT]: ...
 
 
 def gflow(
-    g: BaseGraph[VT, ET], focus: bool=False, reverse: bool=False, pauli: bool=False,
-    *, method: Literal["cubic", "legacy"]="cubic", layers_only: bool=False
+    g: BaseGraph[VT, ET], focus: Optional[bool]=None, reverse: bool=False,
+    pauli: bool=False, *, method: Literal["cubic", "legacy"]="cubic",
+    include_ground_constraints: Optional[bool]=None,
+    layers_only: bool=False
 ) -> _Result[VT]:
     r"""Find gflow with every spider interpreted as an XY measurement.
 
     :param g: A graph-like ZX diagram.
-    :param focus: Require focused corrections, including constraints on grounds.
+    :param focus: Legacy only. Request focused corrections when ``True``;
+        defaults to ``False`` for that method.
     :param reverse: Reverse the roles of inputs and outputs.
-    :param pauli: Compatibility alias for :func:`pauli_flow` when ``True``.
-        Use that entry point for new Pauli-flow calls.
-    :param method: ``cubic`` (default) uses column elimination;
-        ``legacy`` retains the previous finder.
-    :param layers_only: Skip correction-coordinate tracking and return only
-        layers when ``True``. Supported by ``cubic``.
+    :param pauli: Deprecated alias for :func:`pauli_flow` when ``True``.
+    :param method: ``cubic`` (default) or ``legacy``.
+    :param include_ground_constraints: Cubic only. Keep homogeneous ground
+        rows in the correction equations when ``True``; defaults to ``False``.
+    :param layers_only: Cubic only. Return layers without correction sets.
     :return: ``(layers, corrections)`` by default, a layer dictionary with
         ``layers_only=True``, or ``None`` if no flow exists. An empty graph
         has flow and gives an empty dictionary in layers-only mode.
 
-    The cubic finder returns focused corrections even when
-    ``focus=False``. That mode omits ground rows; ``focus=True`` keeps their
-    homogeneous constraints. Corrections and layers can differ from legacy.
-    Ordinary order runs from smaller to larger layers; reverse mode inverts
-    numbering.
+    The cubic finder always returns focused corrections on measured vertices.
+    Its ground constraints are controlled separately. The legacy finder can
+    return unfocused corrections with ``focus=False``. Correction sets and
+    layers can differ between methods. Ordinary order runs from smaller to
+    larger layers; reverse mode inverts numbering.
 
-    Spider phases do not affect XY assignments. With ``pauli=True``, delegate
-    to :func:`pauli_flow`, which infers X and Y assignments from phases.
+    Spider phases do not affect XY assignments. With ``pauli=True``, emit a
+    ``DeprecationWarning`` and delegate to :func:`pauli_flow`.
     """
     if pauli:
+        warnings.warn(
+            "pyzx.flow.gflow(..., pauli=True) is deprecated. "
+            "Use pyzx.flow.pauli_flow(...) instead.",
+            DeprecationWarning, stacklevel=2,
+        )
         return pauli_flow(g, focus=focus, reverse=reverse, method=method,
+                          include_ground_constraints=include_ground_constraints,
                           layers_only=layers_only)
+    _check_method_options(method, focus, include_ground_constraints, layers_only)
     if method == "legacy":
-        if layers_only:
-            raise ValueError("layers_only is not supported by the legacy finder")
-        return _gflow_legacy(g, focus=focus, reverse=reverse, pauli=False)
-    if method != "cubic":
-        raise ValueError("Unknown flow method: " + method)
-
+        return _gflow_legacy(g, focus=False if focus is None else focus,
+                             reverse=reverse, pauli=False)
     measurements: Dict[VT, _Measurement] = {
         v: "XY" for v in g.vertices() if vertex_is_zx(g.type(v))
     }
-    return _find_cubic_flow(g, measurements, focus=focus, reverse=reverse,
-                            layers_only=layers_only)
+    return _find_cubic_flow(
+        g, measurements, reverse=reverse,
+        include_ground_constraints=(False if include_ground_constraints is None
+                                    else include_ground_constraints),
+        layers_only=layers_only,
+    )
 
 
 @overload
 def pauli_flow(
-    g: BaseGraph[VT, ET], focus: bool=False, reverse: bool=False,
-    *, method: Literal["cubic", "legacy"]="cubic", layers_only: Literal[False]=False
+    g: BaseGraph[VT, ET], focus: Optional[bool]=None, reverse: bool=False,
+    *, method: Literal["cubic", "legacy"]="cubic",
+    include_ground_constraints: Optional[bool]=None,
+    layers_only: Literal[False]=False
 ) -> Optional[_Flow[VT]]: ...
 
 
 @overload
 def pauli_flow(
-    g: BaseGraph[VT, ET], focus: bool=False, reverse: bool=False,
-    *, method: Literal["cubic", "legacy"]="cubic", layers_only: Literal[True]
+    g: BaseGraph[VT, ET], focus: Optional[bool]=None, reverse: bool=False,
+    *, method: Literal["cubic", "legacy"]="cubic",
+    include_ground_constraints: Optional[bool]=None,
+    layers_only: Literal[True]
 ) -> Optional[_Layers[VT]]: ...
 
 
 @overload
 def pauli_flow(
-    g: BaseGraph[VT, ET], focus: bool=False, reverse: bool=False,
-    *, method: Literal["cubic", "legacy"]="cubic", layers_only: bool
+    g: BaseGraph[VT, ET], focus: Optional[bool]=None, reverse: bool=False,
+    *, method: Literal["cubic", "legacy"]="cubic",
+    include_ground_constraints: Optional[bool]=None,
+    layers_only: bool
 ) -> _Result[VT]: ...
 
 
 def pauli_flow(
-    g: BaseGraph[VT, ET], focus: bool=False, reverse: bool=False,
-    *, method: Literal["cubic", "legacy"]="cubic", layers_only: bool=False
+    g: BaseGraph[VT, ET], focus: Optional[bool]=None, reverse: bool=False,
+    *, method: Literal["cubic", "legacy"]="cubic",
+    include_ground_constraints: Optional[bool]=None,
+    layers_only: bool=False
 ) -> _Result[VT]:
     r"""Find Pauli flow for XY, X, and Y measurements.
 
@@ -126,29 +150,27 @@ def pauli_flow(
     Other measurement types are not supported.
 
     :param g: A graph-like ZX diagram.
-    :param focus: Require focused corrections, including ground constraints.
+    :param focus: Legacy only. Request focused corrections when ``True``;
+        defaults to ``False`` for that method.
     :param reverse: Reverse the roles of inputs and outputs.
-    :param method: ``cubic`` (default) uses column elimination;
-        ``legacy`` retains the previous finder.
-    :param layers_only: Skip correction-coordinate tracking and return only
-        layers when ``True``. Supported by ``cubic``.
+    :param method: ``cubic`` (default) or ``legacy``.
+    :param include_ground_constraints: Cubic only. Keep homogeneous ground
+        rows in the correction equations when ``True``; defaults to ``False``.
+    :param layers_only: Cubic only. Return layers without correction sets.
     :return: ``(layers, corrections)`` by default, a layer dictionary with
         ``layers_only=True``, or ``None`` if no flow exists. An empty graph
         has flow and gives an empty dictionary in layers-only mode.
 
-    The cubic finder returns focused corrections even when
-    ``focus=False``. That mode omits ground rows; ``focus=True`` keeps their
-    homogeneous constraints. Corrections and layers can differ from legacy.
-    Ordinary order runs from smaller to larger layers; reverse mode inverts
-    numbering.
+    The cubic finder always returns focused corrections on measured vertices.
+    Its ground constraints are controlled separately. The legacy finder can
+    return unfocused corrections with ``focus=False``. Correction sets and
+    layers can differ between methods. Ordinary order runs from smaller to
+    larger layers; reverse mode inverts numbering.
     """
+    _check_method_options(method, focus, include_ground_constraints, layers_only)
     if method == "legacy":
-        if layers_only:
-            raise ValueError("layers_only is not supported by the legacy finder")
-        return _gflow_legacy(g, focus=focus, reverse=reverse, pauli=True)
-    if method != "cubic":
-        raise ValueError("Unknown flow method: " + method)
-
+        return _gflow_legacy(g, focus=False if focus is None else focus,
+                             reverse=reverse, pauli=True)
     measurements: Dict[VT, _Measurement] = {}
     for v in g.vertices():
         if not vertex_is_zx(g.type(v)):
@@ -160,13 +182,37 @@ def pauli_flow(
             measurements[v] = "Y"
         else:
             measurements[v] = "XY"
-    return _find_cubic_flow(g, measurements, focus=focus, reverse=reverse,
-                            layers_only=layers_only)
+    return _find_cubic_flow(
+        g, measurements, reverse=reverse,
+        include_ground_constraints=(False if include_ground_constraints is None
+                                    else include_ground_constraints),
+        layers_only=layers_only,
+    )
+
+
+def _check_method_options(
+    method: str, focus: Optional[bool], include_ground_constraints: Optional[bool],
+    layers_only: bool
+) -> None:
+    """Validate backend options; None distinguishes omission from False."""
+    if method not in ("cubic", "legacy"):
+        raise ValueError(f"Unknown flow method: {method!r}")
+    if method == "cubic" and focus is not None:
+        raise ValueError(
+            "focus is only supported by the legacy finder; "
+            "use include_ground_constraints for cubic ground constraints"
+        )
+    if method == "legacy":
+        if include_ground_constraints is not None:
+            raise ValueError("include_ground_constraints is only supported by cubic")
+        if layers_only:
+            raise ValueError("layers_only is not supported by the legacy finder")
 
 
 def _find_cubic_flow(
     g: BaseGraph[VT, ET], measurements: Mapping[VT, _Measurement],
-    focus: bool=False, reverse: bool=False, *, layers_only: bool=False
+    reverse: bool=False, *, include_ground_constraints: bool=False,
+    layers_only: bool=False
 ) -> _Result[VT]:
     r"""Find focused flow from explicit XY/X/Y assignments.
 
@@ -198,7 +244,8 @@ def _find_cubic_flow(
     paulis = {v for v in vertices if measurements[v] in ("X", "Y")}
     ys = {v for v in vertices if measurements[v] == "Y"}
 
-    rows = [v for v in vertices if v not in (outputs if focus else processed)]
+    excluded_rows = outputs if include_ground_constraints else processed
+    rows = [v for v in vertices if v not in excluded_rows]
     row_index = {v: i for i, v in enumerate(rows)}
     columns = [v for v in vertices if v not in inputs]
     column_index = {v: j for j, v in enumerate(columns)}

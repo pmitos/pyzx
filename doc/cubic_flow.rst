@@ -1,23 +1,14 @@
 Cubic flow finding for XY, X and Y
 ==================================
 
-This file describes the new flow-finding algorithms that run in :math:`O(n^3)` time
-where :math:`n` is the number of vertices.
+``pyzx.flow.gflow`` finds gflow by interpreting all spiders in a graph-like diagram
+as :math:`XY` measurements. ``pyzx.flow.pauli_flow`` finds Pauli flow by interpreting
+Pauli phases as :math:`X` or :math:`Y` measurements and other phases as :math:`XY`.
+Both finders default to ``method="cubic"``, which runs in :math:`O(n^3)` time for
+:math:`n` vertices and returns focused corrections.
 
-``pyzx.flow.gflow`` and ``pyzx.flow.pauli_flow`` are two entry points for flow finding.
-``pyzx.flow.gflow`` finds gflow by interpreting all spiders in a graph-like diagram as
-:math:`XY` measurements, and ``pyzx.flow.pauli_flow`` finds Pauli flow by interpreting
-some spiders as :math:`X` or :math:`Y`, where applicable. These functions have a keyword
-``method`` which defaults to ``method="cubic"`` for the new fast implementation.
-The new entry points still support the ``focus`` keyword, though regardless of the
-value, they always return focused gflow or focused Pauli flow. Both entry points call
-``_find_cubic_flow``, which is the actual finder algorithm, explained below.
-
-In addition, new methods offer ``layers_only=True``, which returns only layers of the
-partial order without correction sets. This is slightly faster (though still
-:math:`O(n^3)`) on instances with flow (gflow or Pauli flow). It can be useful if the
-user cares only about the existence of flow or only the layers of the partial order, but
-not about what the flow looks like. For example:
+``layers_only=True`` returns the partial-order layers without correction sets. It
+can save time when only flow existence or the layers are needed:
 
 .. code-block:: python
 
@@ -26,9 +17,16 @@ not about what the flow looks like. For example:
     layers = pauli_flow(g, layers_only=True)
     has_flow = layers is not None
 
+The ``focus`` option belongs to ``method="legacy"``. That finder supports both
+focused and unfocused corrections. For the cubic finder, use
+``include_ground_constraints=True`` to retain homogeneous constraints on ground
+vertices; these constraints are omitted by default. Ground vertices are processed
+with outputs and have no correction sets of their own in either mode.
+
 For compatibility, the following are still available:
 
-- ``gflow(..., pauli=True)`` as entry point for Pauli flow finder,
+- ``gflow(..., pauli=True)`` as a deprecated alias for ``pauli_flow``, emitting a
+  ``DeprecationWarning``.
 - ``pyzx.gflow`` file exports methods from ``pyzx.flow`` so that existing imports
   continue to work.
 - ``method="legacy"`` gives access to the old (slow) finder. The legacy finder still
@@ -79,7 +77,7 @@ original correction columns. For every unsolved :math:`u`, maintain a partial co
 
 When moving to earlier layers, the columns considered in :math:`M[R,A]c` grow. We add a
 column only when it becomes relevant after adjusting it against the existing basis. If
-the new column introduces a pivot in the reduced matrix, eliminate that pivot from every
+the column introduces a pivot in the reduced matrix, eliminate that pivot from every
 affected unsolved residual, applying the same XOR to its correction coordinates.
 Otherwise, the core methodology resembles previous flow-finding algorithms.
 
@@ -95,6 +93,6 @@ Tests enumerate all 4,233 graph/input/output/XY-X-Y instances on up to three ver
 against the Pauli-flow definition directly. Other tests compare the cubic and
 legacy finders on fixed graphs.
 
-The optional ``tests/benchmark_flow.py`` test uses 200 spiders, 14 inputs and 14
-outputs. It compares the cubic and legacy finders on this larger example and can
-be run with ``python -m tests.benchmark_flow``.
+The optional ``tests/test_flow_benchmark.py`` test checks and times the cubic
+finder on a 200-spider graph. Run it with
+``PYZX_RUN_FLOW_BENCHMARK=1 python -m unittest tests.test_flow_benchmark``.
