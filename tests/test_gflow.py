@@ -24,7 +24,7 @@ from unittest.mock import patch
 
 from pyzx.circuit import Circuit
 from pyzx import gflow as compatibility_gflow
-from pyzx.flow import gflow, pauli_flow, _find_incremental_flow
+from pyzx.flow import gflow, pauli_flow, _find_cubic_flow
 from pyzx.graph import Graph
 from pyzx.pauliweb import compute_pauli_webs
 from pyzx.utils import EdgeType, VertexType
@@ -161,9 +161,9 @@ class TestGFlow(unittest.TestCase):
                                 with self.subTest(n=n, edges=edges, inputs=inputs,
                                                   outputs=outputs, labels=labels,
                                                   focus=focus):
-                                    result = pauli_flow(graph, focus=focus, method="incremental")
+                                    result = pauli_flow(graph, focus=focus, method="cubic")
                                     self.assertEqual(result is not None, expected)
-                                    layers = pauli_flow(graph, focus=focus, method="incremental",
+                                    layers = pauli_flow(graph, focus=focus, method="cubic",
                                                         layers_only=True)
                                     self.assertEqual(layers is not None, expected)
                                     self.assertEqual(layers, None if result is None else result[0])
@@ -171,10 +171,10 @@ class TestGFlow(unittest.TestCase):
                                         self.assert_valid_flow(graph, result, True, False, focus)
                                     # All-XY patterns also exercise ordinary gflow.
                                     if all(label == 'XY' for label in labels_tuple):
-                                        ordinary = gflow(graph, focus=focus, method="incremental")
+                                        ordinary = gflow(graph, focus=focus, method="cubic")
                                         self.assertEqual(ordinary is not None, expected)
                                         self.assertEqual(
-                                            gflow(graph, focus=focus, method="incremental", layers_only=True),
+                                            gflow(graph, focus=focus, method="cubic", layers_only=True),
                                             None if ordinary is None else ordinary[0])
                                         if ordinary is not None:
                                             self.assert_valid_flow(graph, ordinary, False, False, focus)
@@ -187,11 +187,11 @@ class TestGFlow(unittest.TestCase):
         self.assertEqual(len(graph.inputs()), 14)
         self.assertEqual(len(graph.outputs()), 14)
         before = graph.to_json()
-        result = pauli_flow(graph, focus=True, method="incremental")
+        result = pauli_flow(graph, focus=True, method="cubic")
         self.assert_valid_flow(graph, result, True, False, True)
-        self.assertEqual(pauli_flow(graph, focus=True, method="incremental", layers_only=True),
+        self.assertEqual(pauli_flow(graph, focus=True, method="cubic", layers_only=True),
                          result[0])
-        self.assertIsNone(gflow(graph, focus=True, method="incremental"))
+        self.assertIsNone(gflow(graph, focus=True, method="cubic"))
         self.assertEqual(graph.to_json(), before)
 
     def test_rectangular_dependent_and_zero_columns(self):
@@ -228,9 +228,9 @@ class TestGFlow(unittest.TestCase):
             graph, _ = open_graph([Fraction(1, 4)] * 6, edges,
                                   inputs=[0, 1, 2], outputs=[3, 4, 5])
             with self.subTest(column_order=column_order):
-                full = gflow(graph, method="incremental")
+                full = gflow(graph, method="cubic")
                 self.assert_valid_flow(graph, full, False, False, False)
-                self.assertEqual(gflow(graph, method="incremental", layers_only=True), full[0])
+                self.assertEqual(gflow(graph, method="cubic", layers_only=True), full[0])
 
     def test_dense_rectangular_system_across_packed_word_boundaries(self):
         """Dense corrections retain coordinates beyond machine-word widths."""
@@ -244,11 +244,11 @@ class TestGFlow(unittest.TestCase):
         edges.extend((i, 2 * n) for i, row in enumerate(rows) if 0 in row)
         graph, vertices = open_graph([Fraction(1, 4)] * (2 * n + 2), edges,
                                      inputs=range(n), outputs=range(n, 2 * n + 2))
-        result = gflow(graph, method="incremental")
+        result = gflow(graph, method="cubic")
         self.assert_valid_flow(graph, result, False, False, False)
         if result is not None:
             self.assertTrue(any(vertices[2 * n - 1] in c for c in result[1].values()))
-            self.assertEqual(gflow(graph, method="incremental", layers_only=True), result[0])
+            self.assertEqual(gflow(graph, method="cubic", layers_only=True), result[0])
 
     def test_unequal_io_rank_deficient_system(self):
         """Extra outputs alone do not ensure the existence of a right inverse."""
@@ -272,7 +272,10 @@ class TestGFlow(unittest.TestCase):
         result = subprocess.run(
             [sys.executable, "-c",
              "import pyzx as zx\n"
+             "assert hasattr(zx, 'flow')\n"
              "from pyzx.flow import gflow, pauli_flow\n"
+             "assert zx.flow.gflow is gflow\n"
+             "assert zx.flow.pauli_flow is pauli_flow\n"
              "assert zx.gflow.gflow is gflow\n"
              "assert zx.gflow.pauli_flow is pauli_flow\n"],
             capture_output=True, text=True)
@@ -282,38 +285,38 @@ class TestGFlow(unittest.TestCase):
         """The explicit API preserves the existing Pauli-flow mode."""
         graph, _ = open_graph([Fraction(1, 2)])
         self.assertIsNone(gflow(graph))
-        for method in ("cubic", "incremental", "legacy"):
+        for method in ("cubic", "legacy"):
             with self.subTest(method=method):
                 result = pauli_flow(graph, method=method)
                 self.assertEqual(result, gflow(graph, pauli=True, method=method))
                 self.assert_valid_flow(graph, result, True, False, False)
 
-    def test_incremental_finder_uses_explicit_measurements(self):
+    def test_cubic_finder_uses_explicit_measurements(self):
         """Explicit X/Y assignments apply even to non-Clifford phases."""
         graph, vertices = open_graph([Fraction(1, 4)] * 2, [(0, 1)])
         before = graph.to_json()
-        self.assertIsNone(_find_incremental_flow(graph, {v: "XY" for v in vertices}))
-        result = _find_incremental_flow(graph, {v: "X" for v in vertices})
+        self.assertIsNone(_find_cubic_flow(graph, {v: "XY" for v in vertices}))
+        result = _find_cubic_flow(graph, {v: "X" for v in vertices})
         self.assertEqual(result, ({v: 0 for v in vertices},
                                  {vertices[0]: {vertices[1]}, vertices[1]: {vertices[0]}}))
         self.assertEqual(before, graph.to_json())
 
         isolated, (v,) = open_graph([Fraction(1, 4)])
-        self.assertIsNone(_find_incremental_flow(isolated, {v: "X"}))
-        self.assertEqual(_find_incremental_flow(isolated, {v: "Y"}),
+        self.assertIsNone(_find_cubic_flow(isolated, {v: "X"}))
+        self.assertEqual(_find_cubic_flow(isolated, {v: "Y"}),
                          ({v: 0}, {v: {v}}))
 
-    def test_incremental_finder_uses_ground_measurement_assignment(self):
+    def test_cubic_finder_uses_ground_measurement_assignment(self):
         """A ground's explicit Y diagonal can satisfy its homogeneous row."""
         graph, (u, ground, output) = open_graph(
             [Fraction(1, 4)] * 3, [(0, 2), (1, 2)], inputs=[0], outputs=[2])
         graph.set_ground(ground)
         measurements = {u: "XY", ground: "XY", output: "XY"}
-        self.assertIsNone(_find_incremental_flow(graph, measurements, focus=True))
+        self.assertIsNone(_find_cubic_flow(graph, measurements, focus=True))
         measurements[ground] = "Y"
-        self.assertEqual(_find_incremental_flow(graph, measurements, focus=True),
+        self.assertEqual(_find_cubic_flow(graph, measurements, focus=True),
                          ({ground: 1, output: 1, u: 0}, {u: {ground, output}}))
-        self.assertEqual(_find_incremental_flow(graph, measurements, focus=False),
+        self.assertEqual(_find_cubic_flow(graph, measurements, focus=False),
                          ({ground: 1, output: 1, u: 0}, {u: {output}}))
 
     def test_phase_periodicity_and_input_exclusion(self):
@@ -457,16 +460,16 @@ class TestGFlow(unittest.TestCase):
                         with self.subTest(sample=sample, pauli=pauli,
                                           reverse=reverse, focus=focus):
                             result = gflow(graph, focus, reverse, pauli)
-                            incremental = gflow(graph, focus, reverse, pauli,
-                                                method="incremental")
+                            cubic = gflow(graph, focus, reverse, pauli,
+                                          method="cubic")
                             legacy = gflow(graph, focus, reverse, pauli, method="legacy")
                             self.assertEqual(result is None, legacy is None)
-                            self.assertEqual(result, incremental)
+                            self.assertEqual(result, cubic)
                             self.assertEqual(
-                                gflow(graph, focus, reverse, pauli, method="incremental", layers_only=True),
-                                None if incremental is None else incremental[0])
-                            if incremental is not None:
-                                self.assert_valid_flow(graph, incremental, pauli, reverse, focus)
+                                gflow(graph, focus, reverse, pauli, method="cubic", layers_only=True),
+                                None if cubic is None else cubic[0])
+                            if cubic is not None:
+                                self.assert_valid_flow(graph, cubic, pauli, reverse, focus)
                             if result is not None:
                                 self.assert_valid_flow(graph, result, pauli, reverse, focus)
 
@@ -474,7 +477,7 @@ class TestGFlow(unittest.TestCase):
         """The keyword returns layers directly, and None alone denotes no flow."""
         graph, _ = open_graph([Fraction(1, 4)] * 3, [(0, 1), (1, 2)],
                               inputs=[0], outputs=[2])
-        for method in ("cubic", "incremental"):
+        for method in ("cubic",):
             for finder in (gflow, pauli_flow):
                 with self.subTest(method=method, finder=finder.__name__):
                     full = finder(graph, method=method)
@@ -502,14 +505,14 @@ class TestGFlow(unittest.TestCase):
         measurements = {u: "XY", ground: "Y", output: "XY"}
         for focus in (False, True):
             with self.subTest(focus=focus):
-                full = _find_incremental_flow(graph, measurements, focus=focus)
+                full = _find_cubic_flow(graph, measurements, focus=focus)
                 self.assertIsNotNone(full)
                 self.assertEqual(
-                    _find_incremental_flow(graph, measurements, focus=focus,
+                    _find_cubic_flow(graph, measurements, focus=focus,
                                            layers_only=True), full[0])
                 blocked = measurements.copy()
                 blocked[ground] = "XY"
-                self.assertIsNone(_find_incremental_flow(
+                self.assertIsNone(_find_cubic_flow(
                     graph, blocked, focus=True, layers_only=True))
         self.assertEqual(before, graph.to_json())
 
@@ -524,18 +527,18 @@ class TestGFlow(unittest.TestCase):
             self.assertEqual(result is None, gflow(graph, focus=focus, method="legacy") is None)
             self.assert_valid_flow(graph, result, False, False, focus)
 
-    def test_incremental_is_default_for_balanced_and_unbalanced_graphs(self):
+    def test_cubic_is_default_for_balanced_and_unbalanced_graphs(self):
         """Boundary balance does not change the cubic backend."""
         for outputs in ([2], [1, 2]):
             graph, _ = open_graph([Fraction(1, 4)] * 3,
                                   [(0, 1), (1, 2)], inputs=[0], outputs=outputs)
             with self.subTest(outputs=outputs):
                 result = gflow(graph)
-                self.assertEqual(result, gflow(graph, method="incremental"))
+                self.assertEqual(result, gflow(graph, method="cubic"))
                 self.assert_valid_flow(graph, result, False, False, False)
 
     def test_long_chain(self):
-        """Incrementally unlocked columns preserve focusing across 129 layers."""
+        """Newly unlocked columns preserve focusing across 129 layers."""
         graph = Graph()
         vertices = [graph.add_vertex(VertexType.Z, phase=Fraction(1, 4))
                     for _ in range(130)]
@@ -546,10 +549,10 @@ class TestGFlow(unittest.TestCase):
             b = graph.add_vertex(VertexType.BOUNDARY)
             graph.add_edge((v, b), EdgeType.SIMPLE)
             setter((b,))
-        self.assert_valid_flow(graph, gflow(graph, method="incremental"), False, False, False)
+        self.assert_valid_flow(graph, gflow(graph, method="cubic"), False, False, False)
         self.assert_valid_flow(graph, gflow(graph), False, False, False)
-        full = gflow(graph, method="incremental")
-        self.assertEqual(gflow(graph, method="incremental", layers_only=True), full[0])
+        full = gflow(graph, method="cubic")
+        self.assertEqual(gflow(graph, method="cubic", layers_only=True), full[0])
 
     def test_empty_and_isolated(self):
         """Empty graphs and diagonal-only Y corrections need no graph edges."""

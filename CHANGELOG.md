@@ -9,9 +9,9 @@ Hence, occasionally changes will be backwards incompatible (although they will a
 ## [Unreleased]
 
 ### Added
-- Incremental cubic flow finding for XY, X, and Y measurements, with the previous finder available as `method="legacy"`. (by @pmitos)
+- Cubic flow finding for XY, X, and Y measurements, with the previous finder available as `method="legacy"`. (by @pmitos)
 - `pyzx.flow.pauli_flow` as the explicit entry point for Pauli flow on XY, X, and Y measurements. (by @pmitos)
-- Optional `layers_only=True` on incremental flow finders, returning layers without tracking or decoding correction witnesses. (by @pmitos)
+- Optional `layers_only=True` on cubic flow finders, returning layers without tracking or decoding correction witnesses. (by @pmitos)
 - The X-H bialgebra rule now supports H-box with phases and complex labels. Automatic simplification remains restricted to standard H-boxes. (by @RazinShaikh)
 
 ### Changed

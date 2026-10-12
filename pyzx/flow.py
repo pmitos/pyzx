@@ -15,7 +15,7 @@
 # limitations under the License.
 
 from fractions import Fraction
-from typing import Dict, Set, Tuple, Optional, Literal, Mapping, Union, overload
+from typing import Dict, List, Set, Tuple, Optional, Literal, Mapping, Union, overload
 
 from .linalg import Mat2
 from .graph.base import BaseGraph, VT, ET
@@ -31,27 +31,27 @@ _Result = Optional[Union[_Flow[VT], _Layers[VT]]]
 @overload
 def gflow(
     g: BaseGraph[VT, ET], focus: bool=False, reverse: bool=False, pauli: bool=False,
-    *, method: str="cubic", layers_only: Literal[False]=False
+    *, method: Literal["cubic", "legacy"]="cubic", layers_only: Literal[False]=False
 ) -> Optional[_Flow[VT]]: ...
 
 
 @overload
 def gflow(
     g: BaseGraph[VT, ET], focus: bool=False, reverse: bool=False, pauli: bool=False,
-    *, method: str="cubic", layers_only: Literal[True]
+    *, method: Literal["cubic", "legacy"]="cubic", layers_only: Literal[True]
 ) -> Optional[_Layers[VT]]: ...
 
 
 @overload
 def gflow(
     g: BaseGraph[VT, ET], focus: bool=False, reverse: bool=False, pauli: bool=False,
-    *, method: str="cubic", layers_only: bool
+    *, method: Literal["cubic", "legacy"]="cubic", layers_only: bool
 ) -> _Result[VT]: ...
 
 
 def gflow(
     g: BaseGraph[VT, ET], focus: bool=False, reverse: bool=False, pauli: bool=False,
-    *, method: str="cubic", layers_only: bool=False
+    *, method: Literal["cubic", "legacy"]="cubic", layers_only: bool=False
 ) -> _Result[VT]:
     r"""Find gflow with every spider interpreted as an XY measurement.
 
@@ -60,15 +60,15 @@ def gflow(
     :param reverse: Reverse the roles of inputs and outputs.
     :param pauli: Compatibility alias for :func:`pauli_flow` when ``True``.
         Use that entry point for new Pauli-flow calls.
-    :param method: ``cubic`` (default) and ``incremental`` both use incremental
-        column elimination; ``legacy`` retains the previous finder.
+    :param method: ``cubic`` (default) uses column elimination;
+        ``legacy`` retains the previous finder.
     :param layers_only: Skip correction-coordinate tracking and return only
-        layers when ``True``. Supported by ``cubic`` and ``incremental``.
+        layers when ``True``. Supported by ``cubic``.
     :return: ``(layers, corrections)`` by default, a layer dictionary with
         ``layers_only=True``, or ``None`` if no flow exists. An empty graph
         has flow and gives an empty dictionary in layers-only mode.
 
-    Incremental elimination returns focused corrections even when
+    The cubic finder returns focused corrections even when
     ``focus=False``. That mode omits ground rows; ``focus=True`` keeps their
     homogeneous constraints. Corrections and layers can differ from legacy.
     Ordinary order runs from smaller to larger layers; reverse mode inverts
@@ -84,40 +84,40 @@ def gflow(
         if layers_only:
             raise ValueError("layers_only is not supported by the legacy finder")
         return _gflow_legacy(g, focus=focus, reverse=reverse, pauli=False)
-    if method not in ("cubic", "incremental"):
+    if method != "cubic":
         raise ValueError("Unknown flow method: " + method)
 
     measurements: Dict[VT, _Measurement] = {
         v: "XY" for v in g.vertices() if vertex_is_zx(g.type(v))
     }
-    return _find_incremental_flow(g, measurements, focus=focus, reverse=reverse,
-                                  layers_only=layers_only)
+    return _find_cubic_flow(g, measurements, focus=focus, reverse=reverse,
+                            layers_only=layers_only)
 
 
 @overload
 def pauli_flow(
     g: BaseGraph[VT, ET], focus: bool=False, reverse: bool=False,
-    *, method: str="cubic", layers_only: Literal[False]=False
+    *, method: Literal["cubic", "legacy"]="cubic", layers_only: Literal[False]=False
 ) -> Optional[_Flow[VT]]: ...
 
 
 @overload
 def pauli_flow(
     g: BaseGraph[VT, ET], focus: bool=False, reverse: bool=False,
-    *, method: str="cubic", layers_only: Literal[True]
+    *, method: Literal["cubic", "legacy"]="cubic", layers_only: Literal[True]
 ) -> Optional[_Layers[VT]]: ...
 
 
 @overload
 def pauli_flow(
     g: BaseGraph[VT, ET], focus: bool=False, reverse: bool=False,
-    *, method: str="cubic", layers_only: bool
+    *, method: Literal["cubic", "legacy"]="cubic", layers_only: bool
 ) -> _Result[VT]: ...
 
 
 def pauli_flow(
     g: BaseGraph[VT, ET], focus: bool=False, reverse: bool=False,
-    *, method: str="cubic", layers_only: bool=False
+    *, method: Literal["cubic", "legacy"]="cubic", layers_only: bool=False
 ) -> _Result[VT]:
     r"""Find Pauli flow for XY, X, and Y measurements.
 
@@ -128,15 +128,15 @@ def pauli_flow(
     :param g: A graph-like ZX diagram.
     :param focus: Require focused corrections, including ground constraints.
     :param reverse: Reverse the roles of inputs and outputs.
-    :param method: ``cubic`` (default) and ``incremental`` both use incremental
-        column elimination; ``legacy`` retains the previous finder.
+    :param method: ``cubic`` (default) uses column elimination;
+        ``legacy`` retains the previous finder.
     :param layers_only: Skip correction-coordinate tracking and return only
-        layers when ``True``. Supported by ``cubic`` and ``incremental``.
+        layers when ``True``. Supported by ``cubic``.
     :return: ``(layers, corrections)`` by default, a layer dictionary with
         ``layers_only=True``, or ``None`` if no flow exists. An empty graph
         has flow and gives an empty dictionary in layers-only mode.
 
-    Incremental elimination returns focused corrections even when
+    The cubic finder returns focused corrections even when
     ``focus=False``. That mode omits ground rows; ``focus=True`` keeps their
     homogeneous constraints. Corrections and layers can differ from legacy.
     Ordinary order runs from smaller to larger layers; reverse mode inverts
@@ -146,7 +146,7 @@ def pauli_flow(
         if layers_only:
             raise ValueError("layers_only is not supported by the legacy finder")
         return _gflow_legacy(g, focus=focus, reverse=reverse, pauli=True)
-    if method not in ("cubic", "incremental"):
+    if method != "cubic":
         raise ValueError("Unknown flow method: " + method)
 
     measurements: Dict[VT, _Measurement] = {}
@@ -160,11 +160,11 @@ def pauli_flow(
             measurements[v] = "Y"
         else:
             measurements[v] = "XY"
-    return _find_incremental_flow(g, measurements, focus=focus, reverse=reverse,
-                                  layers_only=layers_only)
+    return _find_cubic_flow(g, measurements, focus=focus, reverse=reverse,
+                            layers_only=layers_only)
 
 
-def _find_incremental_flow(
+def _find_cubic_flow(
     g: BaseGraph[VT, ET], measurements: Mapping[VT, _Measurement],
     focus: bool=False, reverse: bool=False, *, layers_only: bool=False
 ) -> _Result[VT]:
@@ -176,13 +176,14 @@ def _find_incremental_flow(
     For XY/X/Y, the Mitosek--Backens order-demand matrix N consists only of
     zero rows and an identity subblock. Order constraints therefore just
     forbid individual unprocessed XY correction coordinates. This permits
-    incremental column elimination without constructing a global right inverse,
+    column elimination without constructing a global right inverse,
     kernel basis or kernel-adjustment system. General XZ/YZ order demands
     cannot be handled by this simple column-availability rule.
 
     Each candidate column is inserted at most once; each new pivot updates
     each unsolved RHS at most once. Packed integer vectors give O(n^3) bit
-    work and O(n^2) matrix bits. See https://arxiv.org/abs/2410.23439 for M/N.
+    work and O(n^2) matrix bits. See https://doi.org/10.1088/1751-8121/ae2999
+    for M/N.
 
     With ``layers_only=True``, residual reduction and layer construction are
     identical, but no correction-coordinate vectors or sets are constructed.
@@ -217,7 +218,7 @@ def _find_incremental_flow(
     # Each entry is (pivot bit, transformed M column, correction coordinates).
     # Coordinates stay zero in layers-only mode.
     # Later basis vectors have zero entries at every earlier pivot.
-    basis: list[tuple[int, int, int]] = []
+    basis: List[Tuple[int, int, int]] = []
     # N only selects XY coordinates: outputs and X/Y correctors are available
     # now; each non-input XY column is added after its vertex is processed.
     # Keep every demand row, including already solved ones, to retain focusing.

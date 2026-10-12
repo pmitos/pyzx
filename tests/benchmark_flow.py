@@ -255,7 +255,7 @@ def warm_up(checker):
     graph.add_edge((xy, output), EdgeType.HADAMARD)
     graph.add_edge((output, boundary), EdgeType.SIMPLE)
     graph.set_outputs((boundary,))
-    for method in ("incremental", "legacy"):
+    for method in ("cubic", "legacy"):
         result = flow.pauli_flow(graph, focus=True, method=method)
         checker.assert_valid_flow(graph, result, True, False, True)
 
@@ -274,17 +274,17 @@ def main():
         "spiders": 200, "boundary_vertices": 28,
         "python": platform.python_version(), "platform": platform.platform(),
         "focus": True, "layers_only": False, "repeats": args.repeats,
-        "method_order": "incremental first on even repetitions, legacy first on odd repetitions",
+        "method_order": "cubic first on even repetitions, legacy first on odd repetitions",
         "records": [],
     }
     print("200 spiders, full corrections, focus=True", flush=True)
     print("Timing finder calls only; graph construction, warm-up, and witness checks are excluded.", flush=True)
     checker = TestGFlow()
     warm_up(checker)
-    times: dict[str, list[float]] = {method: [] for method in ("incremental", "legacy")}
+    times: dict[str, list[float]] = {method: [] for method in ("cubic", "legacy")}
     cpu_times: dict[str, list[float]] = {method: [] for method in times}
     for repetition in range(args.repeats):
-        methods = ("incremental", "legacy") if repetition % 2 == 0 else ("legacy", "incremental")
+        methods = ("cubic", "legacy") if repetition % 2 == 0 else ("legacy", "cubic")
         for method in methods:
             graph = make_flow_graph()
             before = graph.to_json()
@@ -306,8 +306,8 @@ def main():
     report["median_seconds"] = {method: statistics.median(values) for method, values in times.items()}
     report["median_cpu_seconds"] = {method: statistics.median(values) for method, values in cpu_times.items()}
     medians = report["median_seconds"]
-    report["legacy_over_incremental"] = medians["legacy"] / medians["incremental"]
-    print(f"Median legacy / incremental: {report['legacy_over_incremental']:.1f}x")
+    report["legacy_over_cubic"] = medians["legacy"] / medians["cubic"]
+    print(f"Median legacy / cubic: {report['legacy_over_cubic']:.1f}x")
     if args.output:
         args.output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
         print(f"Saved {args.output}")

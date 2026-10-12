@@ -1,18 +1,17 @@
-Incremental flow finding for XY, X and Y
-========================================
+Cubic flow finding for XY, X and Y
+==================================
 
 This file describes the new flow-finding algorithms that run in :math:`O(n^3)` time
 where :math:`n` is the number of vertices.
 
 ``pyzx.flow.gflow`` and ``pyzx.flow.pauli_flow`` are two entry points for flow finding.
-``pyzx.flow.gflow`` finds gflow by interpreting all spiders in graph-like diagram as
+``pyzx.flow.gflow`` finds gflow by interpreting all spiders in a graph-like diagram as
 :math:`XY` measurements, and ``pyzx.flow.pauli_flow`` finds Pauli flow by interpreting
 some spiders as :math:`X` or :math:`Y`, where applicable. These functions have a keyword
-``method`` which defaults to ``method="cubic"`` for the new fast implementation. Using
-``method="incremental"`` has the same effect. The new entry points still support the
-``focus`` keyword, though regardless of the value, they always return focused gflow or
-focused Pauli flow. Both entry points call ``_find_incremental_flow``, which is the
-actual finder algorithm, explained below.
+``method`` which defaults to ``method="cubic"`` for the new fast implementation.
+The new entry points still support the ``focus`` keyword, though regardless of the
+value, they always return focused gflow or focused Pauli flow. Both entry points call
+``_find_cubic_flow``, which is the actual finder algorithm, explained below.
 
 In addition, new methods offer ``layers_only=True``, which returns only layers of the
 partial order without correction sets. This is slightly faster (though still
@@ -24,7 +23,7 @@ not about what the flow looks like. For example:
 
     from pyzx.flow import pauli_flow
 
-    layers = pauli_flow(g, method="incremental", layers_only=True)
+    layers = pauli_flow(g, layers_only=True)
     has_flow = layers is not None
 
 For compatibility, the following are still available:
@@ -67,8 +66,8 @@ Furthermore, the implementation uses packed integer representation. Instead of h
 matrix :math:`M` as a two-dimensional array, we hold an array of integers. Each integer,
 when written in binary, corresponds to the column of the matrix.
 
-Incremental construction
-------------------------
+Layer-by-layer construction
+---------------------------
 
 Let :math:`T` be the measured vertices already placed in later layers. Available
 correctors are :math:`A=(O\cup X\cup Y\cup T)\setminus I`. For each unsolved :math:`u`,
@@ -93,9 +92,9 @@ Verification
 ------------
 
 Tests enumerate all 4,233 graph/input/output/XY-X-Y instances on up to three vertices
-against the Pauli-flow definition directly. Other tests compare the incremental and
+against the Pauli-flow definition directly. Other tests compare the cubic and
 legacy finders on fixed graphs.
 
 The optional ``tests/benchmark_flow.py`` test uses 200 spiders, 14 inputs and 14
-outputs. It compares the incremental and legacy finders on this larger example and can
+outputs. It compares the cubic and legacy finders on this larger example and can
 be run with ``python -m tests.benchmark_flow``.
