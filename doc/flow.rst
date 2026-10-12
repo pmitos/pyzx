@@ -22,9 +22,9 @@ implementation additionally supports the ``focus`` argument, which specifies whe
 returned flow must be focused.
 
 Ground vertices are processed with the outputs and receive no correction sets of their
-own. In the cubic method, ``include_ground_constraints=True`` retains their homogeneous
-constraints in the correction equations; these are omitted by default. In the legacy
-method, ``focus=True`` retains these constraints.
+own. In the cubic method, ``include_ground_constraints=True`` retains their constraints
+in the correction equations. These are omitted by default. In the legacy method,
+``focus=True`` adds these constraints.
 
 All finding methods search for gflow or Pauli flow on graph-like diagrams without
 explicitly checking that the diagram is in such form.

@@ -65,23 +65,22 @@ def gflow(
     r"""Find gflow with every spider interpreted as an XY measurement.
 
     :param g: A graph-like ZX diagram.
-    :param focus: Legacy only. Request focused corrections when ``True``;
-        defaults to ``False`` for that method.
+    :param focus: Applies to legacy finder only. Ensure returned flow is focused.
     :param reverse: Reverse the roles of inputs and outputs.
     :param pauli: Deprecated alias for :func:`pauli_flow` when ``True``.
     :param method: ``cubic`` (default) or ``legacy``.
-    :param include_ground_constraints: Cubic only. Keep homogeneous ground
-        rows in the correction equations when ``True``; defaults to ``False``.
+    :param include_ground_constraints: Applies to cubic finder only. Keep ground
+        rows in the correction equations when ``True``. Defaults to ``False``.
     :param layers_only: Cubic only. Return layers without correction sets.
     :return: ``(layers, corrections)`` by default, a layer dictionary with
         ``layers_only=True``, or ``None`` if no flow exists. An empty graph
         has flow and gives an empty dictionary in layers-only mode.
 
-    The cubic finder always returns focused corrections on measured vertices.
-    Its ground constraints are controlled separately. The legacy finder can
-    return unfocused corrections with ``focus=False``. Correction sets and
-    layers can differ between methods. Ordinary order runs from smaller to
-    larger layers; reverse mode inverts numbering.
+    The cubic finder always returns focused flow.
+    The ground constraints of focused conditions are controlled separately.
+    The legacy finder can return unfocused corrections with ``focus=False``.
+    Correction sets and layers can differ between methods.
+    Reverse mode inverts numbering of layers in the partial order.
 
     Spider phases do not affect XY assignments. With ``pauli=True``, issue a
     ``DeprecationWarning`` and delegate to :func:`pauli_flow`.
