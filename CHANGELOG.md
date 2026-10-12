@@ -15,7 +15,7 @@ Hence, occasionally changes will be backwards incompatible (although they will a
 - The X-H bialgebra rule now supports H-box with phases and complex labels. Automatic simplification remains restricted to standard H-boxes. (by @RazinShaikh)
 
 ### Changed
-- The default flow finder always returns focused correction sets, which can differ from the legacy finder. Use `method="legacy", focus=False` to retain the previous choice. In the cubic method, the ground constraints for focused flow are selected separately with `include_ground_constraints`. `focus` is legacy only. (by @pmitos)
+- The default flow finder always returns focused correction sets, which can differ from those returned by the legacy finder. Use `method="legacy", focus=False` to retain the previous choice. In the cubic method, the ground constraints for focused flow are selected separately with `include_ground_constraints`. `focus` is legacy only. (by @pmitos)
 - Flow finding now lives in `pyzx.flow`; `pyzx.gflow` exports the public entry points for compatibility with existing imports. (by @pmitos)
 - `simplify.full_reduce` now replaces arity 2 H-boxes with Hadamard edges and fuses arity 1 H-boxes into adjacent Z spiders. This is equivalent to calling `hsimplify.from_hypergraph_form` beforehand in older versions. (by @96-LB)
 
