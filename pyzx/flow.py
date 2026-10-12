@@ -83,7 +83,7 @@ def gflow(
     layers can differ between methods. Ordinary order runs from smaller to
     larger layers; reverse mode inverts numbering.
 
-    Spider phases do not affect XY assignments. With ``pauli=True``, emit a
+    Spider phases do not affect XY assignments. With ``pauli=True``, issue a
     ``DeprecationWarning`` and delegate to :func:`pauli_flow`.
     """
     if pauli:

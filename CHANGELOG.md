@@ -20,7 +20,7 @@ Hence, occasionally changes will be backwards incompatible (although they will a
 - `simplify.full_reduce` now replaces arity 2 H-boxes with Hadamard edges and fuses arity 1 H-boxes into adjacent Z spiders. This is equivalent to calling `hsimplify.from_hypergraph_form` beforehand in older versions. (by @96-LB)
 
 ### Deprecated
-- `gflow(..., pauli=True)` emits a `DeprecationWarning`; use `pauli_flow(...)` instead. The alias remains supported. (by @pmitos)
+- `gflow(..., pauli=True)` issues a `DeprecationWarning`; use `pauli_flow(...)` instead. The alias remains supported. (by @pmitos)
 
 ### Fixed
 - `graph_to_circuit()` in `graphparser.py` now raises a `NotImplementedError` when extracting conditional gates instead of silently returning a circuit with potentially incorrect gate ordering (by @akshaysoftware).

@@ -25,7 +25,7 @@ with outputs and have no correction sets of their own in either mode.
 
 For compatibility, the following are still available:
 
-- ``gflow(..., pauli=True)`` as a deprecated alias for ``pauli_flow``, emitting a
+- ``gflow(..., pauli=True)`` as a deprecated alias for ``pauli_flow``, issuing a
   ``DeprecationWarning``.
 - ``pyzx.gflow`` file exports methods from ``pyzx.flow`` so that existing imports
   continue to work.
