@@ -93,6 +93,6 @@ Tests enumerate all 4,233 graph/input/output/XY-X-Y instances on up to three ver
 against the Pauli-flow definition directly. Other tests compare the cubic and
 legacy finders on fixed graphs.
 
-The optional ``tests/test_flow_benchmark.py`` test checks and times the cubic
-finder on a 200-spider graph. Run it with
-``PYZX_RUN_FLOW_BENCHMARK=1 python -m unittest tests.test_flow_benchmark``.
+The large flow test uses a 200-spider graph and is excluded from standard test
+discovery because of its size. Run it explicitly with
+``python -m unittest tests.large_flow_test``.

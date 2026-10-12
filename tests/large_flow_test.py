@@ -14,14 +14,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Optional 200-spider check: set PYZX_RUN_FLOW_BENCHMARK=1 to enable it."""
+"""Large Pauli-flow correctness test on a 200-spider graph.
+
+This larger graph is kept outside standard unittest discovery because of its
+size. Run the test explicitly from the repository root with:
+
+    python -m unittest tests.large_flow_test
+"""
 
 import json
-import os
 import unittest
 from fractions import Fraction
 from pathlib import Path
-from time import perf_counter
 
 from pyzx.flow import pauli_flow
 from pyzx.graph import Graph
@@ -29,12 +33,10 @@ from pyzx.utils import EdgeType, VertexType
 from tests.flow_test_utils import assert_valid_flow
 
 
-@unittest.skipUnless(os.environ.get("PYZX_RUN_FLOW_BENCHMARK") == "1",
-                     "set PYZX_RUN_FLOW_BENCHMARK=1 to run the optional flow test")
-class TestFlowBenchmark(unittest.TestCase):
+class TestLargeFlow(unittest.TestCase):
 
-    def test_cubic_flow(self):
-        data = json.loads((Path(__file__).parent / "data/flow_benchmark_graph.json").read_text())
+    def test_large_pauli_flow(self):
+        data = json.loads((Path(__file__).parent / "data/large_flow_graph.json").read_text())
         graph = Graph()
         vertices = [graph.add_vertex(VertexType.Z, phase=Fraction(1, 4))
                     for _ in data["neighbours"]]
@@ -56,16 +58,11 @@ class TestFlowBenchmark(unittest.TestCase):
         self.assertEqual(graph.num_edges(), 1683)
         before = graph.to_json()
 
-        start = perf_counter()
         result = pauli_flow(graph)
-        full_time = perf_counter() - start
         assert_valid_flow(self, graph, result, True)
-        start = perf_counter()
         layers = pauli_flow(graph, layers_only=True)
-        layers_time = perf_counter() - start
         self.assertEqual(layers, result[0])
         self.assertEqual(graph.to_json(), before)
-        print(f"200 spiders: cubic {full_time:.6f}s; layers-only {layers_time:.6f}s")
 
 
 if __name__ == '__main__':
