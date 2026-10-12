@@ -21,12 +21,13 @@ save time when only flow existence or the layers are needed:
 implementation additionally supports the ``focus`` argument, which specifies whether the
 returned flow must be focused.
 
-``include_ground_constraints=True`` makes finders skip looking for correction sets of
-ground vertices. Such vertices still contribute to the focusing conditions of flow if
-``focus=True`` or ``method="cubic"``.
+Ground vertices are processed with the outputs and receive no correction sets of their
+own. In the cubic method, ``include_ground_constraints=True`` retains their homogeneous
+constraints in the correction equations; these are omitted by default. In the legacy
+method, ``focus=True`` retains these constraints.
 
-All finding methods search gflow or Pauli flow on graph-like diagrams without explicitly
-checking that the diagram is in such form.
+All finding methods search for gflow or Pauli flow on graph-like diagrams without
+explicitly checking that the diagram is in such form.
 
 See :mod:`pyzx.flow` for the full API reference.
 
@@ -47,7 +48,7 @@ submatrix of the graph's adjacency matrix, with additional ones on the main diag
 the :math:`Y`-measured vertices. The order-demand matrix :math:`N` also has shape
 :math:`R \times S`. The only non-zero entries of :math:`N` are on the main diagonal for
 non-input :math:`XY` measurements. The algebraic formulation states that flow exists if
-there exists an :math:`R \times S` matrix :math:`C`, known as the correction matrix,
+there exists an :math:`S \times R` matrix :math:`C`, known as the correction matrix,
 such that :math:`MC=\mathrm{Id}_R` and :math:`NC` is the adjacency matrix of a directed
 acyclic graph (DAG). Furthermore, columns of :math:`C` encode correction sets, and the
 transitive closure of :math:`NC` forms the partial order.
