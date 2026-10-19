@@ -15,7 +15,8 @@
 # limitations under the License.
 
 __all__ = ['extract_circuit', 'extract_simple', 'graph_to_swaps', 'extract_clifford_normal_form',
-           'lookahead_extract_base', 'lookahead_full', 'lookahead_fast', 'lookahead_extract']
+           'lookahead_extract_base', 'lookahead_full', 'lookahead_fast', 'lookahead_extract',
+           'extract_circuit_pauli', 'extract_pauli']
 
 from fractions import Fraction
 from typing import Generic
@@ -26,6 +27,7 @@ from .circuit import Circuit
 from .circuit.gates import CNOT, CZ, HAD, SWAP, XCX, XPhase, ZPhase
 from .graph.base import ET, VT, BaseGraph
 from .linalg import Z2, Mat2
+from .pauli_extract import extract_circuit_pauli, extract_pauli
 from .rewrite_rules import *
 from .simplify import full_reduce, id_simp, is_graph_like, pivot_simp
 from .utils import EdgeType, VertexType, toggle_edge

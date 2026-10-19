@@ -9,6 +9,7 @@ Hence, occasionally changes will be backwards incompatible (although they will a
 ## [Unreleased]
 
 ### Added
+- Simmons Pauli-flow extraction via `extract_circuit_pauli`, with reusable focused flow witnesses, a Clifford/Pauli-rotation intermediate representation, and synthesis into elementary circuits. Explicit patterns support all six measurement labels in the equal-input/output domain. (by @pmitos)
 - Cubic flow finding for XY, X, and Y measurements, with the previous finder available as `method="legacy"`. (by @pmitos)
 - `pyzx.flow.pauli_flow` as the entry point for Pauli flow on XY, X, and Y measurements. (by @pmitos)
 - Optional `layers_only=True` on cubic flow finders, returning partial order layers without correction sets. (by @pmitos)

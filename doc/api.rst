@@ -63,11 +63,14 @@ Circuit extraction and matrices over Z2
 
 .. module:: extract
 
-There is basically a single function that is needed for the most general extraction of a circuit from a ZX-diagram:
+The main frontier-based circuit extractor is:
 
 .. autofunction:: pyzx.extract.extract_circuit
 
-This function uses some reasoning over matrices over the field Z2. This functionality is implemented in the following class.
+For Pauli-flow extraction and its intermediate representation, see
+:doc:`pauli-extraction`.
+
+The frontier-based extractor uses matrices over the field Z2. This functionality is implemented in the following class.
 
 .. autoclass:: pyzx.linalg.Mat2
 	:members:

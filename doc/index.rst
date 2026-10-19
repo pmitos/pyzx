@@ -16,6 +16,7 @@ PyZX
    graph
    representations
    flow
+   pauli-extraction
    api
 
 .. toctree::
