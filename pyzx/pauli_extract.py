@@ -7,6 +7,8 @@ Lemma C.2 gives output Pauli strings for the planar rotations. Theorem C.12
 separates those rotations from a residual Clifford map. Here that map is
 reconstructed by projecting its Choi stabilizers, with packed row supports
 and incidence columns. A supplied focused flow is validated and reused.
+Both extraction entry points return a PauliCircuit; elementary-gate synthesis
+is an explicit, optional conversion through PauliCircuit.to_circuit().
 
 Extraction does not construct dense matrices. The current domain has equal
 input/output counts, rational angles and no discarded qubits. Results agree
@@ -419,11 +421,13 @@ class PauliExponential:
 
 @dataclass(frozen=True)
 class PauliCircuit:
-    """Apply ``clifford`` first, then ``rotations`` in tuple/time order.
+    """An extracted Clifford map and ordered Pauli exponentials.
 
+    Apply ``clifford`` first, then ``rotations`` in tuple/time order. Extraction
+    preserves this representation without constructing elementary gates.
     ``flow_layers`` retains the witness's output-first partial order, and each
-    rotation retains its source vertex for tracing;
-    ``to_circuit()`` synthesises an elementary PyZX circuit without ancillas.
+    rotation retains its source vertex for tracing. Call ``to_circuit()``
+    explicitly for a basic gate decomposition without ancillas.
     """
 
     clifford: CliffordMap
@@ -445,7 +449,12 @@ class PauliCircuit:
         return self.clifford.n_qubits
 
     def to_circuit(self) -> Circuit:
-        """Synthesise Clifford gates and CNOT ladders, up to a global scalar."""
+        """Explicitly convert to elementary gates, up to a global scalar.
+
+        This reference conversion synthesises the Clifford map and each
+        Pauli exponential independently, using local basis changes and CNOT
+        ladders. It does not optimize across exponentials.
+        """
         circuit = self.clifford.to_circuit()
         for rotation in self.rotations:
             _append_rotation(circuit, rotation)
@@ -619,7 +628,11 @@ def extract_pauli(
     pattern: PauliPattern | BaseGraph, *, flow: Flow | None = None,
     infer_pauli: bool = True,
 ) -> PauliCircuit:
-    """Extract a Clifford map and ordered Pauli rotations following Simmons.
+    """Return a :class:`PauliCircuit` following Simmons's extraction.
+
+    The result retains a Clifford map and ordered Pauli exponentials, without
+    synthesising elementary gates. Use :meth:`PauliCircuit.to_circuit` for an
+    explicit basic gate decomposition.
 
     A graph input must be graph-like; it is not mutated. A supplied ``flow``
     is the ``(layers, corrections)`` pair returned by :func:`pyzx.flow.pauli_flow`
@@ -695,13 +708,15 @@ def extract_pauli(
 def extract_circuit_pauli(
     g: PauliPattern | BaseGraph, *, flow: Flow | None = None,
     infer_pauli: bool = True,
-) -> Circuit:
-    """Extract an elementary Circuit via Simmons's Pauli-flow construction.
+) -> PauliCircuit:
+    """Return a :class:`PauliCircuit`, as :func:`extract_pauli` does.
 
-    See :func:`extract_pauli` for domain, phase and witness conventions.
-    This adds no ancillary wires and preserves the map up to a global scalar.
+    The Clifford map and Pauli exponentials are preserved; no elementary
+    gates are synthesised. Call ``result.to_circuit()`` explicitly for a
+    basic gate decomposition. See :func:`extract_pauli` for domain, phase
+    and witness conventions.
     """
-    return extract_pauli(g, flow=flow, infer_pauli=infer_pauli).to_circuit()
+    return extract_pauli(g, flow=flow, infer_pauli=infer_pauli)
 
 
 def _synthesise_clifford(clifford: CliffordMap) -> Circuit:

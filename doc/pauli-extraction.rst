@@ -1,12 +1,15 @@
 Pauli-flow circuit extraction
 =============================
 
-``pyzx.extract_circuit_pauli`` implements the construction in Will Simmons,
+``pyzx.extract_pauli`` implements the construction in Will Simmons,
 `Relating Measurement Patterns to Circuits via Pauli Flow
 <https://doi.org/10.4204/EPTCS.343.4>`_ (2021), Lemma C.2 and Theorem C.12.
-It separates a computation into a Clifford map and ordered rotations about
-Pauli tensors, then synthesises an ordinary :class:`pyzx.circuit.Circuit`.
-It is separate from the frontier-based :func:`pyzx.extract.extract_circuit`.
+It returns a :class:`~pyzx.pauli_extract.PauliCircuit` containing a Clifford
+map and ordered rotations about Pauli tensors. Extraction preserves this
+representation without synthesising elementary gates.
+``pyzx.extract_circuit_pauli`` is an equivalent entry point returning the same
+type. Both are separate from the frontier-based
+:func:`pyzx.extract.extract_circuit`, which returns an ordinary circuit.
 
 Graph inputs
 ------------
@@ -25,7 +28,7 @@ No ancillary wires are added.
 
     g = circuit.to_graph()
     zx.to_graph_like(g)
-    extracted = zx.extract_circuit_pauli(g)
+    result = zx.extract_pauli(g)
 
 A measured Z-spider with phase ``a`` represents an XY measurement at angle
 ``-a`` in Simmons's conventions. Exact Clifford angles are interpreted as
@@ -43,7 +46,7 @@ Reusing a flow witness
     flow = pauli_flow(g)
     if flow is None:
         raise ValueError("No Pauli flow")
-    extracted = zx.extract_circuit_pauli(g, flow=flow)
+    result = zx.extract_pauli(g, flow=flow)
 
 ``flow`` is the normal forward ``(layers, corrections)`` pair, with correction
 sets. It must be focused and refer to the same graph and measurement labels.
@@ -60,7 +63,7 @@ Intermediate representation and explicit labels
     result = zx.extract_pauli(g, flow=flow)
     clifford = result.clifford
     rotations = result.rotations
-    extracted = result.to_circuit()
+    assert isinstance(result, zx.PauliCircuit)
 
 The Clifford map stores signed generator images ``C X_q C†`` and ``C Z_q C†``.
 Each :class:`~pyzx.pauli_extract.PauliExponential` represents
@@ -70,6 +73,22 @@ retain their source vertex. ``flow_layers`` is stored output-first, with
 outputs in its first tuple, independently of the numbering in the supplied
 PyZX witness. The capped ``to_matrix()`` methods are verification helpers;
 extraction and gate synthesis do not construct dense matrices.
+
+Optional elementary-gate conversion
+-----------------------------------
+
+.. code-block:: python
+
+    circuit = result.to_circuit()
+
+This explicit reference conversion synthesises the Clifford map and each
+Pauli exponential independently, using local basis changes and CNOT ladders.
+It does not optimize across exponentials. Retain ``result.clifford`` and
+``result.rotations`` to pass the structured computation to a joint Pauli
+synthesizer instead.
+
+Explicit measurement labels
+----------------------------
 
 :class:`~pyzx.pauli_extract.PauliPattern` can describe an explicit labelled
 open graph with XY, XZ, YZ, X, Y and Z measurements. Unlike a ZX graph, its
@@ -85,7 +104,7 @@ inputs and outputs are qubit vertices, and may overlap. For example:
         measurements={0: Measurement("XY", Fraction(1, 3))},
     )
     flow = pattern.find_flow()
-    extracted = zx.extract_circuit_pauli(pattern, flow=flow)
+    result = zx.extract_pauli(pattern, flow=flow)
 
 ``Measurement`` follows Simmons's positive-outcome ket conventions:
 XY uses ``(|0> + exp(i*pi*a)|1>)/sqrt(2)``, XZ uses
@@ -112,7 +131,7 @@ flow solve on an input-extended graph.
 
 The packed extraction core and the square flow helper use :math:`O(N^3)` bit work
 and :math:`O(N^2)` stored bits, in addition to the output and exact-angle arithmetic.
-Gate synthesis is a separate step: symplectic elimination produces the
+Optional gate synthesis is a separate step: symplectic elimination produces the
 Clifford gates, and local basis changes and CNOT ladders produce the Pauli
 rotations. There is no claim that this strategy reduces gate count or is
 uniformly faster than frontier-based extraction.

@@ -9,6 +9,8 @@ from unittest.mock import patch
 
 import numpy as np
 
+import pyzx as zx
+
 from pyzx import Circuit, Graph, simplify
 from pyzx.flow import gflow, pauli_flow
 from pyzx.pauli_extract import (
@@ -139,6 +141,35 @@ class TestPauliExtract(unittest.TestCase):
                 positives += 1
         self.assertGreaterEqual(positives, 20)
 
+    def test_public_extractors_preserve_pauli_representation(self):
+        circuit = Circuit(2)
+        circuit.add_gate("HAD", 0)
+        circuit.add_gate("CNOT", 0, 1)
+        circuit.add_gate("ZPhase", 1, phase=Fraction(1, 7))
+        graph = circuit.to_graph()
+        simplify.to_graph_like(graph)
+        original = graph.to_json()
+        witness = pauli_flow(graph)
+        self.assertIsNotNone(witness)
+        for extractor in (zx.extract_pauli, zx.extract_circuit_pauli):
+            for flow in (None, witness):
+                with self.subTest(extractor=extractor.__name__, supplied=flow is not None):
+                    with patch.object(zx.PauliCircuit, "to_circuit",
+                                      side_effect=AssertionError("implicit gate synthesis")), \
+                         patch.object(CliffordMap, "to_circuit",
+                                      side_effect=AssertionError("implicit Clifford synthesis")), \
+                         patch("pyzx.pauli_extract.np.eye",
+                               side_effect=AssertionError("dense arithmetic")):
+                        result = extractor(graph, flow=flow)
+                    self.assertIsInstance(result, zx.PauliCircuit)
+                    self.assertTrue(result.rotations)
+                    self.assertTrue(any(r.angle.denominator == 7 for r in result.rotations))
+                    self.assert_same(circuit.to_matrix(), result.to_matrix())
+                    gates = result.to_circuit()
+                    self.assertIsInstance(gates, Circuit)
+                    self.assert_same(circuit.to_matrix(), gates.to_matrix())
+                    self.assertEqual(graph.to_json(), original)
+
     def test_supplied_public_witness_is_reused_without_dense_arithmetic(self):
         circuit = Circuit(2)
         circuit.add_gate("HAD", 0)
@@ -151,7 +182,9 @@ class TestPauliExtract(unittest.TestCase):
              patch.object(PauliPattern, "find_flow", side_effect=AssertionError("another flow solve")), \
              patch("pyzx.pauli_extract.np.eye", side_effect=AssertionError("dense arithmetic")):
             actual = extract_circuit_pauli(graph, flow=flow)
+        self.assertIsInstance(actual, zx.PauliCircuit)
         self.assert_same(circuit.to_matrix(), actual.to_matrix())
+        self.assert_same(circuit.to_matrix(), actual.to_circuit().to_matrix())
 
     def test_gflow_witness_and_no_axis_inference(self):
         circuit = Circuit(1)
@@ -160,7 +193,7 @@ class TestPauliExtract(unittest.TestCase):
         graph = circuit.to_graph()
         simplify.to_graph_like(graph)
         self.assert_same(circuit.to_matrix(), extract_circuit_pauli(
-            graph, flow=gflow(graph), infer_pauli=False).to_matrix())
+            graph, flow=gflow(graph), infer_pauli=False).to_circuit().to_matrix())
 
     def test_boundaries_phases_and_direct_wires(self):
         circuit = Circuit(3)
@@ -173,8 +206,9 @@ class TestPauliExtract(unittest.TestCase):
         graph.set_inputs(ins)
         graph.set_outputs(outs)
         expected = graph.to_matrix()
-        self.assert_same(expected, extract_circuit_pauli(graph).to_matrix())
-        self.assert_same(expected, extract_circuit_pauli(graph, flow=pauli_flow(graph)).to_matrix())
+        self.assert_same(expected, extract_circuit_pauli(graph).to_circuit().to_matrix())
+        self.assert_same(expected, extract_circuit_pauli(
+            graph, flow=pauli_flow(graph)).to_circuit().to_matrix())
 
     def test_large_packed_boundaries_without_dense_conversion(self):
         vertices = tuple(17 + 3 * i for i in range(70))
@@ -191,7 +225,7 @@ class TestPauliExtract(unittest.TestCase):
                                (0,), (129,), {v: Measurement("X") for v in range(129)})
         circuit = Circuit(1)
         circuit.add_gate("HAD", 0)
-        self.assert_same(circuit.to_matrix(), extract_circuit_pauli(pattern).to_matrix())
+        self.assert_same(circuit.to_matrix(), extract_circuit_pauli(pattern).to_circuit().to_matrix())
         empty = extract_pauli(PauliPattern((), (), (), (), {}))
         np.testing.assert_array_equal(empty.to_matrix(), [[1]])
         self.assertEqual(empty.to_circuit().qubits, 0)
@@ -215,7 +249,8 @@ class TestPauliExtract(unittest.TestCase):
             graph.set_phase(vertices[2], Fraction(1, 3))
             flow = pauli_flow(graph)
             if flow is not None and gflow(graph) is None:
-                self.assert_same(graph.to_matrix(), extract_circuit_pauli(graph, flow=flow).to_matrix())
+                self.assert_same(graph.to_matrix(), extract_circuit_pauli(
+                    graph, flow=flow).to_circuit().to_matrix())
                 return
         self.fail("no Pauli-only example found")
 

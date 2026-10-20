@@ -25,6 +25,7 @@ from .drawing import *
 from .simplify import *
 from .optimize import *
 from .extract import *
+from .pauli_extract import PauliCircuit
 from .graph.jsonparser import *
 from .tensor import *
 from .local_search.simulated_annealing import anneal
