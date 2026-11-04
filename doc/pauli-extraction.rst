@@ -15,12 +15,14 @@ Graph inputs
 ------------
 
 The input must be a graph-like diagram: Z-spiders joined by Hadamard edges,
-with degree-one input/output boundary vertices. The number of inputs and
-outputs must agree. Ground vertices, symbolic phases, self-loops and parallel
+with degree-one input/output boundary vertices. There must be at least as
+many outputs as inputs. Ground vertices, symbolic phases, self-loops and parallel
 edges are rejected. The graph is not modified. Input/output order, boundary
-Hadamards and output phases are preserved, including direct input-output wires.
+Hadamards and output phases are preserved, including direct input-output wires
+and multiple outputs attached to a shared spider.
 The extracted map agrees up to a nonzero global scalar, which is not tracked.
-No ancillary wires are added.
+Extra outputs represent prepared qubits; no wires beyond the output register
+are added. Patterns with no inputs are supported as state preparations.
 
 .. code-block:: python
 
@@ -65,7 +67,15 @@ Intermediate representation and explicit labels
     rotations = result.rotations
     assert isinstance(result, zx.PauliCircuit)
 
-The Clifford map stores signed generator images ``C X_q C†`` and ``C Z_q C†``.
+The Clifford map stores signed logical Pauli images satisfying ``X'_q C = C X_q``
+and ``Z'_q C = C Z_q``. For a unitary these are the usual ``C X_q C†`` and
+``C Z_q C†``. With more outputs than inputs, ``clifford.stabilizers`` additionally
+contains one independent signed output stabilizer per extra output, satisfying
+``S C = C``. Together these specify the Clifford isometry up to global phase,
+without choosing a unitary completion. ``n_inputs`` and ``n_outputs`` give its
+dimensions; ``n_qubits`` denotes the output register size. A state preparation
+has no logical images and is specified entirely by its output stabilizers.
+
 Each :class:`~pyzx.pauli_extract.PauliExponential` represents
 ``exp(-i*pi*angle*P/2)``, where ``P`` is a signed Hermitian Pauli tensor.
 Apply the Clifford first, followed by rotations in tuple order. Rotations
@@ -83,6 +93,11 @@ Optional elementary-gate conversion
 
 This explicit reference conversion synthesises the Clifford map and each
 Pauli exponential independently, using local basis changes and CNOT ladders.
+For an isometry, it first completes the tableau to a Clifford unitary, with
+the extra X images given by the output stabilizers. Extra wires are prepared
+in :math:`|+\rangle` using :class:`~pyzx.circuit.gates.InitAncilla` gates.
+The returned ``Circuit.qubits`` counts the input wires; the initialization
+gates add wires numbered from ``n_inputs`` through ``n_outputs - 1``.
 It does not optimize across exponentials. Retain ``result.clifford`` and
 ``result.rotations`` to pass the structured computation to a joint Pauli
 synthesizer instead.
@@ -115,8 +130,12 @@ negative eigenstate. All angles are rational multiples of pi.
 For explicit patterns, ``find_flow()`` uses the published Mitosek--Backens
 M/N equations (DOI `10.1088/1751-8121/ae2999
 <https://doi.org/10.1088/1751-8121/ae2999>`_). Equal input/output counts make
-M square: invert M over GF(2), then check that NC is acyclic. This helper
-does not extend the public graph-based flow finders to additional planes.
+M square: invert M over GF(2), then check that NC is acyclic. With extra
+outputs, XZ/YZ/Z labels are reduced to Pauli roots with measurement leaves:
+XZ uses a Y root and an XY leaf, YZ uses an X root and an XY leaf, and Z
+uses an X root and an X leaf. The existing cubic finder then supplies a
+focused witness, which is restricted back to the original vertices.
+This helper does not change the public graph-based flow finders' label support.
 
 Implementation
 --------------
@@ -126,10 +145,12 @@ integers. The output rotations use the focused correction sets. The
 Clifford remainder is reconstructed by projecting a Choi stabilizer tableau
 after removing the planar rotations. Incidence columns locate affected rows,
 avoiding a scan of every row at each measurement. Its input-reference block
-is then reduced to recover the Clifford-generator images. This avoids another
-flow solve on an input-extended graph.
+is then reduced to recover the logical Clifford-generator images. The remaining
+rows give the free output stabilizers of the isometry. This avoids another
+flow solve on an input-extended graph. Shared output spiders are separated
+internally, and a supplied witness is extended without another flow solve.
 
-The packed extraction core and the square flow helper use :math:`O(N^3)` bit work
+The packed extraction core and the explicit-pattern flow helper use :math:`O(N^3)` bit work
 and :math:`O(N^2)` stored bits, in addition to the output and exact-angle arithmetic.
 Optional gate synthesis is a separate step: symplectic elimination produces the
 Clifford gates, and local basis changes and CNOT ladders produce the Pauli

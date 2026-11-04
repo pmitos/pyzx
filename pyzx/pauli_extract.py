@@ -10,8 +10,8 @@ and incidence columns. A supplied focused flow is validated and reused.
 Both extraction entry points return a PauliCircuit; elementary-gate synthesis
 is an explicit, optional conversion through PauliCircuit.to_circuit().
 
-Extraction does not construct dense matrices. The current domain has equal
-input/output counts, rational angles and no discarded qubits. Results agree
+Extraction does not construct dense matrices. The domain includes Clifford
+isometries, rational angles and no discarded qubits. Results agree
 up to a nonzero global scalar. The existing frontier extractor is separate.
 """
 
@@ -26,8 +26,9 @@ from typing import Any
 import numpy as np
 
 from .circuit import Circuit
-from .circuit.gates import ParityPhase
+from .circuit.gates import InitAncilla, ParityPhase
 from .flow import gflow, pauli_flow
+from .graph import Graph
 from .graph.base import BaseGraph
 from .symbolic import Poly
 from .utils import EdgeType, VertexType
@@ -105,6 +106,7 @@ class PauliPattern:
     output_hadamards: tuple[int, ...] = ()
     output_phases: tuple[Fraction, ...] = ()
     _direct_wires: tuple[Any, ...] = field(default=(), repr=False, compare=False)
+    _output_copies: tuple[tuple[Any, Any, Any], ...] = field(default=(), repr=False, compare=False)
 
     def __post_init__(self) -> None:
         vertices = tuple(self.vertices)
@@ -155,7 +157,8 @@ class PauliPattern:
 
         A measured Z-spider of phase a represents the XY measurement at -a.
         Clifford angles can be inferred as signed X/Y measurements. Direct
-        input-output wires and shared input/output spiders are supported.
+        input-output wires and shared boundary spiders are supported. Shared
+        outputs are separated internally by identity-wire measurement gadgets.
         """
         if graph.is_hybrid() or graph.scalar.is_zero:
             raise PauliExtractionError("cannot extract a graph with grounds or a zero scalar")
@@ -199,7 +202,7 @@ class PauliPattern:
                 raise PauliExtractionError("a direct wire must connect an input to an output")
         def vertex(b: Any) -> Any:
             return aliases[b] if b in aliases else b if b in direct else neighbors[b][0]
-        pattern_vertices = tuple(v for v in vertices if v not in boundaries) + tuple(direct)
+        pattern_vertices = [v for v in vertices if v not in boundaries] + direct
         pattern_inputs = tuple(vertex(b) for b in ins)
         pattern_outputs = tuple(vertex(b) for b in outs)
         output_set = set(pattern_outputs)
@@ -216,23 +219,51 @@ class PauliPattern:
         oh = tuple(q for q, b in enumerate(outs) if
                    graph.edge_type(graph.edge(b, neighbors[b][0])) == EdgeType.HADAMARD)
         phases = []
+        output_copies = []
+        seen_outputs: set[Any] = set()
+        used = set(vertices)
+        fresh = 0
+        expanded_outputs = []
         for v in pattern_outputs:
             phase = 0 if v in direct else graph.phase(v)
             if isinstance(phase, Poly):
                 raise PauliExtractionError("Pauli extraction requires rational, non-symbolic phases")
-            phases.append(_phase(phase))
-        return cls(pattern_vertices, tuple(edges), pattern_inputs, pattern_outputs,
-                   measurements, ih, oh, tuple(phases), tuple(direct))
+            if v in seen_outputs:
+                # Two Hadamard edges through an X-measured vertex insert an
+                # identity wire, separating shared output spiders. Its phase
+                # is applied only on the first output carrying the old vertex.
+                added = []
+                for _ in range(2):
+                    while fresh in used:
+                        fresh += 1
+                    added.append(fresh)
+                    used.add(fresh)
+                a, out = added
+                pattern_vertices.extend(added)
+                edges.extend(((v, a), (a, out)))
+                measurements[a] = Measurement("X" if infer_pauli else "XY")
+                expanded_outputs.append(out)
+                phases.append(Fraction(0))
+                output_copies.append((v, a, out))
+            else:
+                seen_outputs.add(v)
+                expanded_outputs.append(v)
+                phases.append(_phase(phase))
+        return cls(tuple(pattern_vertices), tuple(edges), pattern_inputs, tuple(expanded_outputs),
+                   measurements, ih, oh, tuple(phases), tuple(direct), tuple(output_copies))
 
     def find_flow(self) -> Flow | None:
-        """Find focused flow for the square domain using the public M/N equations.
+        """Find focused flow using the public M/N equations.
 
         Equal input/output counts make M square, so its right inverse is unique.
         This is direct GF(2) inversion and a DAG check (Mitosek--Backens,
-        DOI 10.1088/1751-8121/ae2999), without kernel adjustment or new dependencies.
+        DOI 10.1088/1751-8121/ae2999). For more outputs, reduce XZ/YZ/Z
+        labels to Pauli roots and measurement leaves and reuse the cubic finder.
         """
-        if len(self.inputs) != len(self.outputs):
-            raise PauliExtractionError("Pauli extraction requires equal input/output counts")
+        if len(self.inputs) > len(self.outputs):
+            raise PauliExtractionError("Pauli extraction requires at least as many outputs as inputs")
+        if len(self.inputs) < len(self.outputs):
+            return _find_expanded_flow(self)
         pos, adjacency = _adjacency(self)
         measured = list(self.measurements)
         correctors = [v for v in self.vertices if v not in set(self.inputs)]
@@ -287,6 +318,52 @@ def _adjacency(pattern: PauliPattern) -> tuple[dict[Any, int], list[int]]:
         adjacency[positions[u]] |= 1 << positions[v]
         adjacency[positions[v]] |= 1 << positions[u]
     return positions, adjacency
+
+
+def _find_expanded_flow(pattern: PauliPattern) -> Flow | None:
+    """Reduce all six labels to XY/X/Y without changing the open boundaries.
+
+    XZ becomes a Y root with an XY leaf; YZ becomes an X root with an XY
+    leaf; Z becomes an X root with an X leaf. A correction for the leaf,
+    restricted to the old vertices, corrects the original measurement.
+    Focusing at the other leaves enforces exclusion of their old planar/Z
+    roots. The leaf order also enforces the original planar dependencies.
+    Only labels matter here, so arbitrary non-Clifford XY phases suffice.
+    """
+    graph = Graph()
+    phases = {"XY": Fraction(1, 4), "X": Fraction(0), "Y": Fraction(1, 2)}
+    roots, targets = {}, {}
+    for v in pattern.vertices:
+        label = pattern.measurements[v].label if v in pattern.measurements else "X"
+        root_label = "Y" if label == "XZ" else "X" if label in {"YZ", "Z"} else label
+        roots[v] = graph.add_vertex(VertexType.Z, phase=phases[root_label])
+        targets[v] = roots[v]
+        if label in {"XZ", "YZ", "Z"}:
+            leaf = graph.add_vertex(VertexType.Z, phase=phases["X" if label == "Z" else "XY"])
+            graph.add_edge((roots[v], leaf), EdgeType.HADAMARD)
+            targets[v] = leaf
+    for u, v in pattern.edges:
+        graph.add_edge((roots[u], roots[v]), EdgeType.HADAMARD)
+    boundaries = []
+    for boundary in (pattern.inputs, pattern.outputs):
+        wires = []
+        for v in boundary:
+            b = graph.add_vertex(VertexType.BOUNDARY)
+            graph.add_edge((b, roots[v]))
+            wires.append(b)
+        boundaries.append(tuple(wires))
+    graph.set_inputs(boundaries[0])
+    graph.set_outputs(boundaries[1])
+    flow = pauli_flow(graph)
+    if flow is None:
+        return None
+    forward, corrections = flow
+    original = {root: v for v, root in roots.items()}
+    return (
+        {v: forward[targets[v]] for v in pattern.vertices},
+        {v: {original[w] for w in corrections[targets[v]] if w in original}
+         for v in pattern.measurements},
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -350,16 +427,26 @@ def _dense_limit(n: int, limit: int) -> None:
 
 @dataclass(frozen=True)
 class CliffordMap:
-    """Images C X_q C† and C Z_q C†; a unitary specified up to global phase."""
+    """Clifford isometry specified up to global phase, without gate synthesis.
+
+    Logical images obey ``x_images[q] C = C X_q`` and likewise for Z.
+    Independent signed ``stabilizers`` obey ``S C = C`` and specify the
+    output subspace. There is one stabilizer per extra output. With no
+    stabilizers this is the usual unitary Clifford tableau.
+    """
 
     x_images: tuple[PauliString, ...]
     z_images: tuple[PauliString, ...]
+    stabilizers: tuple[PauliString, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "x_images", tuple(self.x_images))
         object.__setattr__(self, "z_images", tuple(self.z_images))
-        n = len(self.x_images)
-        if len(self.z_images) != n or any(p.n_qubits != n for p in self.x_images + self.z_images):
+        object.__setattr__(self, "stabilizers", tuple(self.stabilizers))
+        n, m = self.n_inputs, self.n_outputs
+        if len(self.z_images) != n or any(
+            p.n_qubits != m for p in self.x_images + self.z_images + self.stabilizers
+        ):
             raise PauliExtractionError("Clifford generator images have incompatible dimensions")
         for i in range(n):
             for j in range(n):
@@ -371,21 +458,53 @@ class CliffordMap:
                     raise PauliExtractionError(
                         "Clifford images violate the Pauli commutation relations"
                     )
+        basis: dict[int, int] = {}
+        for s in self.stabilizers:
+            if any(not s.commutes(p) for p in self.x_images + self.z_images + self.stabilizers):
+                raise PauliExtractionError("Clifford stabilizers violate the Pauli commutation relations")
+            support = s.x | (s.z << m)
+            while support:
+                pivot = support & -support
+                if pivot not in basis:
+                    basis[pivot] = support
+                    break
+                support ^= basis[pivot]
+            if not support:
+                raise PauliExtractionError("Clifford stabilizers must be independent")
+
+    @property
+    def n_inputs(self) -> int:
+        return len(self.x_images)
+
+    @property
+    def n_outputs(self) -> int:
+        return self.n_inputs + len(self.stabilizers)
 
     @property
     def n_qubits(self) -> int:
-        return len(self.x_images)
+        """Size of the output register."""
+        return self.n_outputs
 
     def to_circuit(self) -> Circuit:
-        """Synthesise signed generator images by symplectic elimination."""
-        return _synthesise_clifford(self)
+        """Synthesise a Clifford, preparing extra output wires in ket plus.
+
+        ``Circuit.qubits`` counts the input wires; ``InitAncilla`` gates add
+        wires numbered from ``n_inputs`` to ``n_outputs - 1``.
+        """
+        unitary = _synthesise_clifford(_complete_clifford(self))
+        if not self.stabilizers:
+            return unitary
+        circuit = Circuit(self.n_inputs)
+        circuit.gates.extend(InitAncilla(q) for q in range(self.n_inputs, self.n_outputs))
+        circuit.gates.extend(unitary.gates)
+        return circuit
 
     def to_matrix(self, *, max_qubits: int = 8) -> np.ndarray:
         """Small-case verification only; choose an arbitrary global phase."""
         n = self.n_qubits
         _dense_limit(n, max_qubits)
         dim = 1 << n
-        zs = [p.to_matrix(max_qubits=max_qubits) for p in self.z_images]
+        zs = [p.to_matrix(max_qubits=max_qubits) for p in self.z_images + self.stabilizers]
         xs = [p.to_matrix(max_qubits=max_qubits) for p in self.x_images]
         for seed in range(dim):
             zero = np.eye(dim, dtype=complex)[:, seed]
@@ -398,10 +517,10 @@ class CliffordMap:
         else:
             raise PauliExtractionError("inconsistent Clifford stabilizers")
         columns = []
-        for basis in range(dim):
+        for basis in range(1 << self.n_inputs):
             column = zero.copy()
             for q, x in enumerate(xs):
-                if basis & (1 << (n - 1 - q)):
+                if basis & (1 << (self.n_inputs - 1 - q)):
                     column = x @ column
             columns.append(column)
         return np.column_stack(columns)
@@ -427,7 +546,8 @@ class PauliCircuit:
     preserves this representation without constructing elementary gates.
     ``flow_layers`` retains the witness's output-first partial order, and each
     rotation retains its source vertex for tracing. Call ``to_circuit()``
-    explicitly for a basic gate decomposition without ancillas.
+    explicitly for a basic gate decomposition. Extra output wires are
+    prepared in ket plus; no wires beyond the output register are added.
     """
 
     clifford: CliffordMap
@@ -447,6 +567,14 @@ class PauliCircuit:
     @property
     def n_qubits(self) -> int:
         return self.clifford.n_qubits
+
+    @property
+    def n_inputs(self) -> int:
+        return self.clifford.n_inputs
+
+    @property
+    def n_outputs(self) -> int:
+        return self.clifford.n_outputs
 
     def to_circuit(self) -> Circuit:
         """Explicitly convert to elementary gates, up to a global scalar.
@@ -544,7 +672,7 @@ def _residual_clifford(
 ) -> CliffordMap:
     """Project the Clifford Choi stabilizers, updating only affected rows."""
     g = pattern
-    n, q = len(g.vertices), len(g.inputs)
+    n, q, m = len(g.vertices), len(g.inputs), len(g.outputs)
     input_wire = {v: j for j, v in enumerate(g.inputs)}
     rows: list[_Row] = []
     for v in g.vertices:
@@ -571,7 +699,7 @@ def _residual_clifford(
         anti = (zs[i] if axis == "X" else xs[i] if axis == "Z" else xs[i] ^ zs[i]) & active
         if not anti:
             raise PauliExtractionError(
-                "residual measurement has no pivot; pattern is not unitary"
+                "residual measurement has no pivot; pattern is not an isometry"
             )
         pivot_bit = anti & -anti
         source = rows[pivot_bit.bit_length() - 1]
@@ -595,14 +723,14 @@ def _residual_clifford(
             rows[j] = x & ~bit, z & ~bit, sign ^ negative
         xs[i] = zs[i] = 0
     rows = [rows[j] for j in _bits(active)]
-    if len(rows) != 2 * q:
+    if len(rows) != q + m:
         raise PauliExtractionError("residual Choi state has an unexpected rank")
     for col in range(2 * q):
         component, wire = divmod(col, q)
         bit = 1 << (n + wire)
         pivot = next((j for j in range(col, len(rows)) if rows[j][component] & bit), None)
         if pivot is None:
-            raise PauliExtractionError("residual Clifford is not a unitary map")
+            raise PauliExtractionError("residual Clifford is not an isometry")
         rows[col], rows[pivot] = rows[pivot], rows[col]
         for j in range(len(rows)):
             if j != col and rows[j][component] & bit:
@@ -611,10 +739,11 @@ def _residual_clifford(
     def image(row: _Row) -> PauliString:
         x = sum(1 << j for j, v in enumerate(g.outputs) if row[0] & (1 << positions[v]))
         z = sum(1 << j for j, v in enumerate(g.outputs) if row[1] & (1 << positions[v]))
-        return PauliString(q, x, z, -1 if row[2] else 1)
+        return PauliString(m, x, z, -1 if row[2] else 1)
 
     return CliffordMap(
-        tuple(image(row) for row in rows[:q]), tuple(image(row) for row in rows[q:])
+        tuple(image(row) for row in rows[:q]), tuple(image(row) for row in rows[q:2 * q]),
+        tuple(image(row) for row in rows[2 * q:]),
     )
 
 
@@ -632,33 +761,52 @@ def extract_pauli(
 
     The result retains a Clifford map and ordered Pauli exponentials, without
     synthesising elementary gates. Use :meth:`PauliCircuit.to_circuit` for an
-    explicit basic gate decomposition.
+    explicit basic gate decomposition, preparing extra outputs in ket plus.
 
     A graph input must be graph-like; it is not mutated. A supplied ``flow``
     is the ``(layers, corrections)`` pair returned by :func:`pyzx.flow.pauli_flow`
     on the same graph, or by :meth:`PauliPattern.find_flow` for explicit labels.
     The witness must be focused, forward, and include correction sets.
     ``infer_pauli`` applies only to graph conversion; use False with a gflow
-    witness. Grounded graphs, unequal boundary counts and symbolic phases are
+    witness. Grounded graphs, fewer outputs than inputs and symbolic phases are
     rejected. Results omit the global scalar.
     """
     if isinstance(pattern, BaseGraph):
         graph = pattern
         pattern = PauliPattern.from_graph(graph, infer_pauli=infer_pauli)
-        if len(pattern.inputs) != len(pattern.outputs):
-            raise PauliExtractionError("Pauli extraction requires equal input/output counts")
+        if len(pattern.inputs) > len(pattern.outputs):
+            raise PauliExtractionError("Pauli extraction requires at least as many outputs as inputs")
         if flow is None:
             flow = pauli_flow(graph) if infer_pauli else gflow(graph)
             if flow is None:
                 raise PauliExtractionError("the graph has no Pauli flow")
-        if flow is not None and pattern._direct_wires:
-            flow = (dict(flow[0]), flow[1])
-            flow[0].update(dict.fromkeys(pattern._direct_wires, max(flow[0].values(), default=0)))
+        if flow is not None and (pattern._direct_wires or pattern._output_copies):
+            forward, old_corrections = flow
+            added = {v for _, measured, out in pattern._output_copies for v in (measured, out)}
+            if (set(forward) != set(pattern.vertices) - set(pattern._direct_wires) - added
+                or set(old_corrections) != set(pattern.measurements) -
+                    {measured for _, measured, _ in pattern._output_copies}):
+                raise PauliExtractionError("flow domains do not match the pattern")
+            if any(isinstance(d, bool) or not isinstance(d, int) or d < 0 for d in forward.values()):
+                raise PauliExtractionError("flow layers must be nonnegative integers")
+            forward = dict(forward)
+            last = max(forward.values(), default=0)
+            forward.update(dict.fromkeys(pattern._direct_wires, last))
+            lifted_corrections = {v: set(s) for v, s in old_corrections.items()}
+            if pattern._output_copies:
+                forward = {v: d + 1 for v, d in forward.items()}
+                for root, measured, out in pattern._output_copies:
+                    forward[measured], forward[out] = last, last + 1
+                    for members in lifted_corrections.values():
+                        if root in members:
+                            members.add(out)
+                    lifted_corrections[measured] = {out}
+            flow = forward, lifted_corrections
     if not isinstance(pattern, PauliPattern):
         raise TypeError("extract_pauli expects a PauliPattern or a PyZX graph")
     g = pattern
-    if len(g.inputs) != len(g.outputs):
-        raise PauliExtractionError("Pauli extraction requires equal input/output counts")
+    if len(g.inputs) > len(g.outputs):
+        raise PauliExtractionError("Pauli extraction requires at least as many outputs as inputs")
     if flow is None:
         flow = pattern.find_flow()
         if flow is None:
@@ -694,7 +842,8 @@ def extract_pauli(
         xs[q], zs[q] = zs[q], xs[q]
     h_mask = sum(1 << q for q in pattern.output_hadamards)
     clifford = CliffordMap(
-        tuple(_hadamard(p, h_mask) for p in xs), tuple(_hadamard(p, h_mask) for p in zs)
+        tuple(_hadamard(p, h_mask) for p in xs), tuple(_hadamard(p, h_mask) for p in zs),
+        tuple(_hadamard(p, h_mask) for p in clifford.stabilizers),
     )
     rotations = [PauliExponential(_hadamard(r.pauli, h_mask), r.angle, r.vertex) for r in rotations]
     for q, angle in enumerate(pattern.output_phases):
@@ -717,6 +866,48 @@ def extract_circuit_pauli(
     and witness conventions.
     """
     return extract_pauli(g, flow=flow, infer_pauli=infer_pauli)
+
+
+def _complete_clifford(clifford: CliffordMap) -> CliffordMap:
+    """Complete an isometry to a unitary tableau, only for optional synthesis.
+
+    Extra X images are the output stabilizers, corresponding to ket-plus
+    preparations. Solve all missing Z partners together, then remove their
+    mutual anticommutations by adding earlier stabilizers. The completion
+    outside the image subspace is arbitrary.
+    """
+    if not clifford.stabilizers:
+        return clifford
+    n, m = clifford.n_inputs, clifford.n_outputs
+    xs = clifford.x_images + clifford.stabilizers
+    rows = [p.z | (p.x << m) | (1 << (2 * m + j - n) if j >= n else 0)
+            for j, p in enumerate(xs)]
+    rows.extend(p.z | (p.x << m) for p in clifford.z_images)
+    pivots = []
+    rank = 0
+    for col in range(2 * m):
+        pivot = next((j for j in range(rank, len(rows)) if rows[j] & (1 << col)), None)
+        if pivot is None:
+            continue
+        rows[rank], rows[pivot] = rows[pivot], rows[rank]
+        for j in range(len(rows)):
+            if j != rank and rows[j] & (1 << col):
+                rows[j] ^= rows[rank]
+        pivots.append(col)
+        rank += 1
+    mask = (1 << m) - 1
+    partners: list[PauliString] = []
+    for i in range(m - n):
+        support = sum(1 << col for col, row in zip(pivots, rows) if row & (1 << (2 * m + i)))
+        partner = PauliString(m, support & mask, support >> m)
+        for j, previous in enumerate(partners):
+            if not partner.commutes(previous):
+                s = clifford.stabilizers[j]
+                x, z, sign = _multiply((partner.x, partner.z, int(partner.sign < 0)),
+                                       (s.x, s.z, int(s.sign < 0)))
+                partner = PauliString(m, x, z, -1 if sign else 1)
+        partners.append(partner)
+    return CliffordMap(xs, clifford.z_images + tuple(partners))
 
 
 def _synthesise_clifford(clifford: CliffordMap) -> Circuit:
