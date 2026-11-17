@@ -450,7 +450,9 @@ class Circuit:
         """Produces a Quipper ASCII description of the circuit."""
         s = "Inputs: " + ", ".join("{!s}:Qbit".format(i) for i in range(self.qubits)) + "\n"
         for g in self.gates:
-            s += g.to_quipper() + "\n"
+            text = g.to_quipper()
+            if text:
+                s += text + "\n"
         s += "Outputs: " + ", ".join("{!s}:Qbit".format(i) for i in range(self.qubits))
         return s
 
