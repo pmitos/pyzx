@@ -37,7 +37,7 @@ Circuit API
 Pauli exponentials
 ------------------
 
-.. autoclass:: pyzx.pauli.PauliExponential
+.. autoclass:: pyzx.circuit.gates.PauliExponential
    :members: to_graph
 
 

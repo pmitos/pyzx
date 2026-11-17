@@ -21,12 +21,13 @@ quantum gates for use in the Circuit class.
 
 import copy
 import math
+from dataclasses import dataclass
 from fractions import Fraction
 from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
 
 from ..graph.base import ET, VT, BaseGraph
 from ..symbolic import Poly, new_const, new_var
-from ..utils import EdgeType, FractionLike, VertexType, half_phase, settings
+from ..utils import EdgeType, FractionLike, VertexType, assert_phase_real, half_phase, normalize_phase, settings
 
 if TYPE_CHECKING:
     from . import Circuit
@@ -942,6 +943,59 @@ class PhaseGadget(ParityPhase):
     """
     def __init__(self, phase: FractionLike, *targets: int) -> None:
         super().__init__(phase, *targets, as_gadget=True)
+
+
+@dataclass(frozen=True, slots=True)
+class PauliExponential:
+    r"""The unitary :math:`\exp(-i\pi a P/2)` for a signed Pauli tensor.
+
+    ``pauli`` specifies :math:`P` as a nonempty string of ``I``, ``X``, ``Y``
+    and ``Z``, with an optional leading sign. The leftmost axis is wire zero,
+    and ``I`` leaves that wire in the register. ``angle`` is :math:`a`, in
+    multiples of :math:`\pi`, and may be symbolic.
+    """
+
+    pauli: str
+    angle: FractionLike
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.pauli, str):
+            raise TypeError("pauli must be a string")
+        pauli = self.pauli if self.pauli.startswith(("+", "-")) else "+" + self.pauli
+        if len(pauli) == 1 or any(axis not in "IXYZ" for axis in pauli[1:]):
+            raise ValueError("pauli must contain I, X, Y or Z axes after an optional sign")
+        angle = normalize_phase(self.angle)
+        if not isinstance(angle, (int, Fraction, Poly)):
+            raise TypeError("angle must be an integer, Fraction or symbolic phase")
+        assert_phase_real(angle)
+        object.__setattr__(self, "pauli", pauli)
+        object.__setattr__(self, "angle", angle)
+
+    def to_graph(self, backend: str | None = None) -> BaseGraph:
+        """Return a ZX diagram using a phase gadget and local basis changes.
+
+        The diagram includes the global phase of the exponential.
+        """
+        from . import Circuit
+
+        axes = self.pauli[1:]
+        angle = -self.angle if self.pauli[0] == "-" else self.angle
+        circuit = Circuit(len(axes))
+        targets = [q for q, axis in enumerate(axes) if axis != "I"]
+        if targets and angle != 0:
+            for q in targets:
+                if axes[q] == "Y":
+                    circuit.add_gate("S", q, adjoint=True)
+                if axes[q] in "XY":
+                    circuit.add_gate("HAD", q)
+            inverse_basis = circuit.adjoint()
+            circuit.add_gate(PhaseGadget(angle, *targets))
+            circuit.add_circuit(inverse_basis)
+
+        graph = circuit.to_graph(backend=backend)
+        # A phase gadget has eigenvalues 1 and exp(i*pi*angle).
+        graph.scalar.add_phase(Fraction(-1, 2) * angle)
+        return graph
 
 
 class RZZ(ParityPhase):

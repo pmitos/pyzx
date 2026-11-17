@@ -17,8 +17,7 @@
 __version__ = "0.10.8"
 
 from .graph.graph import Graph
-from .circuit import Circuit, gates, id
-from .pauli import PauliExponential
+from .circuit import Circuit, PauliExponential, gates, id
 from .linalg import Mat2
 from .utils import settings, VertexType, EdgeType, original_colors, rgb_colors, grayscale_colors
 from .quimb import to_quimb_tensor
