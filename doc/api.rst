@@ -34,6 +34,23 @@ Circuit API
 .. autoclass:: pyzx.circuit.Circuit
    :members:
 
+Pauli exponentials
+------------------
+
+:class:`~pyzx.pauli.PauliExponential` turns a signed Pauli rotation into a ZX
+diagram. The first Pauli letter acts on wire zero, and angles are expressed
+in multiples of :math:`\pi`. The diagram includes the global phase.
+
+.. code-block:: python
+
+   from fractions import Fraction
+   from pyzx import PauliExponential
+
+   graph = PauliExponential("-XIY", Fraction(1, 3)).to_graph()
+
+.. autoclass:: pyzx.pauli.PauliExponential
+   :members: to_graph
+
 
 Flow finding
 ------------
