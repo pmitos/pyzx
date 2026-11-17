@@ -947,12 +947,12 @@ class PhaseGadget(ParityPhase):
 
 @dataclass(frozen=True, slots=True)
 class PauliExponential:
-    r"""The unitary :math:`\exp(-i\pi a P/2)` for a signed Pauli tensor.
+    r"""The unitary :math:`\exp(-i\pi a P/2)` where P is a (signed) Pauli string.
 
     ``pauli`` specifies :math:`P` as a nonempty string of ``I``, ``X``, ``Y``
-    and ``Z``, with an optional leading sign. The leftmost axis is wire zero,
-    and ``I`` leaves that wire in the register. ``angle`` is :math:`a`, in
-    multiples of :math:`\pi`, and may be symbolic.
+    and ``Z``, with an optional leading sign. The leftmost Pauli is wire zero.
+    Pauli ``I`` skips the wire. ``angle`` is :math:`a`, in multiples of
+    :math:'\pi', and may be symbolic.
     """
 
     pauli: str
@@ -974,7 +974,7 @@ class PauliExponential:
     def to_graph(self, backend: str | None = None) -> BaseGraph:
         """Return a ZX diagram using a phase gadget and local basis changes.
 
-        The diagram includes the global phase of the exponential.
+        The diagram includes the global phase.
         """
         from . import Circuit
 
