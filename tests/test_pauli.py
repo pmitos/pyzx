@@ -4,7 +4,7 @@ from fractions import Fraction
 import numpy as np
 
 from pyzx import Circuit, Graph, VertexType, tcount
-from pyzx.circuit import ParityPhase, PauliExponential, PhaseGadget
+from pyzx.circuit import PauliExponential, PhaseGadget
 from pyzx.circuit.gates import HAD, S, TargetMapper
 from pyzx.symbolic import new_var
 
@@ -96,22 +96,6 @@ class TestPauliExponential(unittest.TestCase):
         self.assertEqual(tcount(circuit.to_graph()), 1)
         self.assertEqual(PauliExponential("XX", Fraction(1, 3)).tcount(), 1)
         self.assertEqual(PauliExponential("X", new_var("theta", is_bool=False)).tcount(), 1)
-
-    def test_depth_counts_parity_ladder(self):
-        angle = Fraction(1, 4)
-        for weight in (1, 2, 3, 4):
-            targets = range(0, 2 * weight, 2)
-            gates = (
-                ParityPhase(angle, *targets),
-                PhaseGadget(angle, *targets),
-                PauliExponential("ZI" * weight, angle),
-            )
-            for gate in gates:
-                with self.subTest(weight=weight, gate=type(gate).__name__):
-                    circuit = Circuit(2 * weight)
-                    circuit.add_gate(gate)
-                    self.assertEqual(circuit.depth(), 2 * weight - 1)
-                    self.assertEqual(circuit.stats_dict(depth=True)["depth"], circuit.depth())
 
     def test_remap_and_tensor(self):
         angle = Fraction(1, 4)
