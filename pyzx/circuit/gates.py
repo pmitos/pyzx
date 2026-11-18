@@ -1034,7 +1034,11 @@ class PauliExponential(Gate):
         if isinstance(g, BaseGraph):
             if q_mapper is None or c_mapper is None or backend is not None:
                 raise TypeError("supply a graph and both wire mappers to append to a graph")
-            self.add_to_graph(g, q_mapper, c_mapper)
+            for gate in self._rotation_gates(as_gadget=True):
+                gate.to_graph(g, q_mapper, c_mapper)
+            if not self.gadget_phase:
+                # The gadget has eigenvalues 1 and exp(i*pi*angle).
+                g.scalar.add_phase(Fraction(-1, 2) * self._signed_angle())
             return None
         if q_mapper is not None or c_mapper is not None or (g is not None and backend is not None):
             raise TypeError("supply at most one backend to build a standalone graph")
@@ -1044,20 +1048,6 @@ class PauliExponential(Gate):
         circuit = Circuit(self._max_target() + 1)
         circuit.add_gate(self)
         return circuit.to_graph(backend=backend if g is None else g)
-
-    def add_to_graph(
-        self, g: BaseGraph[VT, ET], q_mapper: TargetMapper[VT], c_mapper: TargetMapper[VT]
-    ) -> None:
-        """Append the rotation to the wires tracked by the mapper.
-
-        This updates the graph and the quantum wire mapper in place and
-        accumulates the rotation's global phase in the graph scalar.
-        """
-        for gate in self._rotation_gates(as_gadget=True):
-            gate.to_graph(g, q_mapper, c_mapper)
-        if not self.gadget_phase:
-            # The gadget has eigenvalues 1 and exp(i*pi*angle).
-            g.scalar.add_phase(Fraction(-1, 2) * self._signed_angle())
 
     def to_basic_gates(self) -> list[Gate]:
         """Return basis changes and a CNOT ladder in the gadget phase convention."""
