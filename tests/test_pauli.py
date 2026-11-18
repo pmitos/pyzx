@@ -131,6 +131,16 @@ class TestPauliExponential(unittest.TestCase):
                     self.assertAlmostEqual(abs(phase), 1)
                     np.testing.assert_allclose(actual, phase * expected, atol=1e-12)
 
+    def test_text_export_rejects_unbound_angle(self):
+        angle = new_var("theta", is_bool=False) / 2
+        for gadget_phase in (False, True):
+            circuit = Circuit(2)
+            circuit.add_gate(PauliExponential("ZZ", angle, gadget_phase=gadget_phase))
+            for export in (circuit.to_qasm, circuit.to_qc, circuit.to_quipper):
+                with self.subTest(gadget_phase=gadget_phase, export=export.__name__):
+                    with self.assertRaisesRegex(TypeError, "bind the Pauli exponential angle"):
+                        export()
+
     def test_gadget_phase_matches_phase_gadget(self):
         for sign, angle in (("+", 0), ("+", Fraction(9, 4)), ("-", Fraction(1, 4))):
             with self.subTest(sign=sign, angle=angle):

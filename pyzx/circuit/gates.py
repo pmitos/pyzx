@@ -951,7 +951,7 @@ class PauliExponential(Gate):
     ``pauli`` specifies :math:`P` as a nonempty string of ``I``, ``X``, ``Y``
     and ``Z``, with an optional leading sign. The leftmost Pauli is wire zero.
     Pauli ``I`` skips the wire. ``angle`` is :math:`a`, in multiples of
-    :math:`\pi`, and may be symbolic.
+    :math:`\pi`, and may be symbolic. Text export requires a bound angle.
 
     With ``gadget_phase=True``, uses the phase convention of
     :class:`PhaseGadget`. This multiplies the exponential by
@@ -1066,7 +1066,7 @@ class PauliExponential(Gate):
         return self._export("to_quipper")
 
     def _export(self, method: str) -> str:
-        if isinstance(self.angle, Poly) and not self.gadget_phase:
+        if isinstance(self.angle, Poly):
             raise TypeError("bind the Pauli exponential angle before exporting")
         return "\n".join(getattr(gate, method)() for gate in self._rotation_gates(as_gadget=True))
 
