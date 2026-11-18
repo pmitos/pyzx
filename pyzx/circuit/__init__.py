@@ -590,18 +590,20 @@ class Circuit:
 
     def depth(self) -> int:
         min_depth = [0] * self.qubits
-        for g in self.gates:
-            if isinstance(g, (ZPhase, XPhase, HAD)):
-                min_depth[g.target] += 1
-            elif isinstance(g, (CZ, CNOT, SWAP)):
-                gate_depth = max(min_depth[g.target], min_depth[g.control]) + 1
-                min_depth[g.target] = gate_depth
-                min_depth[g.control] = gate_depth
-            elif isinstance(g, (CCZ, Tofolli)):
-                gate_depth = max(min_depth[g.target], min_depth[g.ctrl1], min_depth[g.ctrl2]) + 1
-                min_depth[g.target] = gate_depth
-                min_depth[g.ctrl1] = gate_depth
-                min_depth[g.ctrl2] = gate_depth
+        for gate in self.gates:
+            gates = gate.to_basic_gates() if isinstance(gate, (ParityPhase, PauliExponential)) else (gate,)
+            for g in gates:
+                if isinstance(g, (ZPhase, XPhase, HAD)):
+                    min_depth[g.target] += 1
+                elif isinstance(g, (CZ, CNOT, SWAP)):
+                    gate_depth = max(min_depth[g.target], min_depth[g.control]) + 1
+                    min_depth[g.target] = gate_depth
+                    min_depth[g.control] = gate_depth
+                elif isinstance(g, (CCZ, Tofolli)):
+                    gate_depth = max(min_depth[g.target], min_depth[g.ctrl1], min_depth[g.ctrl2]) + 1
+                    min_depth[g.target] = gate_depth
+                    min_depth[g.ctrl1] = gate_depth
+                    min_depth[g.ctrl2] = gate_depth
         return max(min_depth)
 
 
