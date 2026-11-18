@@ -3,8 +3,9 @@ from fractions import Fraction
 
 import numpy as np
 
-from pyzx import Circuit, Graph, PauliExponential, VertexType, tcount
-from pyzx.circuit.gates import HAD, PhaseGadget, S, TargetMapper
+from pyzx import Circuit, Graph, VertexType, tcount
+from pyzx.circuit import PauliExponential, PhaseGadget
+from pyzx.circuit.gates import HAD, S, TargetMapper
 from pyzx.symbolic import new_var
 
 
