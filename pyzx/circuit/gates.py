@@ -953,11 +953,10 @@ class PauliExponential(Gate):
     Pauli ``I`` skips the wire. ``angle`` is :math:`a`, in multiples of
     :math:`\pi`, and may be symbolic.
 
-    With ``gadget_phase=True``, use the phase convention of
+    With ``gadget_phase=True``, uses the phase convention of
     :class:`PhaseGadget`. This multiplies the exponential by
     :math:`\exp(i\pi t/2)`, where :math:`t` is the angle after
-    absorbing the leading sign of the string. For an I/Z string with
-    at least one Z, the gadget acts on the Z wires in wire order.
+    absorbing the leading sign of the string.
     """
 
     name = "PauliExponential"
@@ -968,10 +967,10 @@ class PauliExponential(Gate):
             raise TypeError("pauli must be a string")
         pauli = pauli if pauli.startswith(("+", "-")) else "+" + pauli
         if len(pauli) == 1 or any(axis not in "IXYZ" for axis in pauli[1:]):
-            raise ValueError("pauli must contain I, X, Y or Z axes after an optional sign")
+            raise ValueError("pauli must contain I, X, Y, or Z axes after an optional sign")
         angle = normalize_phase(angle)
         if not isinstance(angle, (int, Fraction, Poly)):
-            raise TypeError("angle must be an integer, Fraction or symbolic phase")
+            raise TypeError("angle must be an integer, Fraction, or symbolic phase")
         assert_phase_real(angle)
         self.pauli = pauli
         self.angle = angle
@@ -1006,10 +1005,7 @@ class PauliExponential(Gate):
         return gate
 
     def tcount(self) -> int:
-        """Count one rotation per non-Clifford angle, as in PyZX's graph T-count.
-
-        A symbolic angle counts unless it is Clifford for every assignment.
-        A rotation about the all-identity string only contributes a scalar.
+        """Counts as one if angle is non-Clifford and string is not identity.
         """
         angle = self.angle if isinstance(self.angle, Poly) else self.angle % 2
         return int(not phase_is_clifford(angle) and any(axis != "I" for axis in self.pauli[1:]))
