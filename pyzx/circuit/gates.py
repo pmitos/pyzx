@@ -853,6 +853,28 @@ class CHAD(Gate):
         for gate in self.to_basic_gates():
             gate.to_graph(g, q_mapper, c_mapper)
 
+def _decompose_parity_phase(phase: FractionLike, targets: tuple[int, ...]) -> list[Gate]:
+    cnots: list[Gate] = [CNOT(control, target) for control, target in zip(targets, targets[1:])]
+    rotation = ZPhase(targets[-1], phase)
+    return cnots + [rotation] + list(reversed(cnots))
+
+
+def _add_parity_phase_gadget(
+    gate: Gate,
+    g: BaseGraph[VT, ET],
+    q_mapper: TargetMapper[VT],
+    phase: FractionLike,
+    targets: tuple[int, ...],
+) -> None:
+    anchors = []
+    for target in targets:
+        anchor = gate.graph_add_node(g, q_mapper, VertexType.Z, target, q_mapper.next_row(target))
+        anchors.append(anchor)
+        q_mapper.advance_next_row(target)
+    g.add_phase_gadget(phase, anchors)
+    g.scalar.add_power(len(targets) - 1)
+
+
 class ParityPhase(Gate):
     name = 'ParityPhase'
     print_phase = True
@@ -889,9 +911,7 @@ class ParityPhase(Gate):
         return g
 
     def _decompose_cnots(self) -> list[Gate]:
-        cnots: list[Gate] = [CNOT(self.targets[i],self.targets[i+1]) for i in range(len(self.targets)-1)]
-        p = ZPhase(self.targets[-1], self.phase)
-        return cnots + [p] + list(reversed(cnots))
+        return _decompose_parity_phase(self.phase, self.targets)
 
     def to_basic_gates(self) -> list[Gate]:
         return self._decompose_cnots()
@@ -916,14 +936,7 @@ class ParityPhase(Gate):
     
     def to_graph(self, g: BaseGraph[VT, ET], q_mapper: TargetMapper[VT], c_mapper: TargetMapper[VT]) -> None:
         if self.as_gadget:
-            # Create phase gadget structure directly in the graph.
-            anchors = []
-            for t in self.targets:
-                v = self.graph_add_node(g, q_mapper, VertexType.Z, t, q_mapper.next_row(t))
-                anchors.append(v)
-                q_mapper.advance_next_row(t)
-            g.add_phase_gadget(self.phase, anchors)
-            g.scalar.add_power(len(self.targets) - 1)
+            _add_parity_phase_gadget(self, g, q_mapper, self.phase, self.targets)
         else:
             # Decompose to CNOTs + ZPhase.
             for gate in self.to_basic_gates():
@@ -1008,8 +1021,7 @@ class PauliExponential(Gate):
 
     def tcount(self) -> int:
         """Count one for a non-Clifford rotation."""
-        angle = self.angle if isinstance(self.angle, Poly) else self.angle % 2
-        return int(not phase_is_clifford(angle))
+        return int(not phase_is_clifford(self._gadget_angle()))
 
     @overload
     def to_graph(self, g: BaseGraph[VT, ET], q_mapper: TargetMapper[VT], c_mapper: TargetMapper[VT]) -> None: ...
@@ -1035,7 +1047,11 @@ class PauliExponential(Gate):
         if isinstance(g, BaseGraph):
             if q_mapper is None or c_mapper is None or backend is not None:
                 raise TypeError("supply a graph and both wire mappers to append to a graph")
-            for gate in self._rotation_gates():
+            basis, inverse_basis = self._basis_changes()
+            for gate in basis:
+                gate.to_graph(g, q_mapper, c_mapper)
+            _add_parity_phase_gadget(self, g, q_mapper, self._gadget_angle(), self.targets)
+            for gate in inverse_basis:
                 gate.to_graph(g, q_mapper, c_mapper)
             # Remove the phase factor of the gadget to obtain the exact exponential.
             g.scalar.add_phase(Fraction(-1, 2) * self.angle)
@@ -1051,7 +1067,9 @@ class PauliExponential(Gate):
 
     def to_basic_gates(self) -> list[Gate]:
         """Return basis changes and a CNOT ladder in the gadget phase convention."""
-        return [basic for gate in self._rotation_gates() for basic in gate.to_basic_gates()]
+        basis, inverse_basis = self._basis_changes()
+        rotation = _decompose_parity_phase(self._gadget_angle(), self.targets)
+        return basis + rotation + inverse_basis
 
     def to_qasm(self) -> str:
         """Export the elementary gates up to global phase."""
@@ -1068,10 +1086,12 @@ class PauliExponential(Gate):
     def _export(self, method: str) -> str:
         if isinstance(self.angle, Poly):
             raise TypeError("bind the Pauli exponential angle before exporting")
-        return "\n".join(getattr(gate, method)() for gate in self._rotation_gates())
+        return "\n".join(getattr(gate, method)() for gate in self.to_basic_gates())
 
-    def _rotation_gates(self) -> list[Gate]:
-        angle = self.angle if isinstance(self.angle, Poly) else self.angle % 2
+    def _gadget_angle(self) -> FractionLike:
+        return self.angle if isinstance(self.angle, Poly) else self.angle % 2
+
+    def _basis_changes(self) -> tuple[list[Gate], list[Gate]]:
         basis: list[Gate] = []
         for target, axis in zip(self.targets, self.pauli):
             if axis == "Y":
@@ -1079,7 +1099,7 @@ class PauliExponential(Gate):
             if axis in "XY":
                 basis.append(HAD(target))
         inverse_basis = [gate.to_adjoint() for gate in reversed(basis)]
-        return basis + [PhaseGadget(angle, *self.targets)] + inverse_basis
+        return basis, inverse_basis
 
 
 class RZZ(ParityPhase):
