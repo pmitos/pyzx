@@ -423,9 +423,26 @@ class PauliCircuit:
         return circuit
 
     def to_matrix(self, *, max_qubits: int = 8) -> np.ndarray:
+        """Evaluate the Clifford map and Pauli rotations directly as matrices."""
         result = self.clifford.to_matrix(max_qubits=max_qubits)
         for rotation in self.rotations:
-            result = rotation.to_graph().to_matrix() @ result
+            angle = rotation.angle
+            if isinstance(angle, Poly):
+                raise ValueError("bind the Pauli exponential angle before matrix conversion")
+            axes = rotation.pauli[1:]
+            pauli = PauliString(
+                self.n_outputs,
+                sum(1 << q for q, axis in enumerate(axes) if axis in "XY"),
+                sum(1 << q for q, axis in enumerate(axes) if axis in "YZ"),
+                -1 if rotation.pauli[0] == "-" else 1,
+            )
+            # The exact exponential has period four in the angle.
+            theta = np.pi * float((angle + 2) % 4 - 2) / 2
+            result = np.cos(theta) * result - 1j * np.sin(theta) * (
+                pauli.to_matrix(max_qubits=max_qubits) @ result
+            )
+            if rotation.gadget_phase:
+                result *= np.exp(1j * theta * pauli.sign)
         return result
 
 

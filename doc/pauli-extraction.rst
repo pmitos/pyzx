@@ -98,8 +98,10 @@ for rotations from output phases. For example, iterate over
 ``zip(result.rotations, result.rotation_vertices)`` to trace each gate.
 ``flow_layers`` is stored output-first, with
 outputs in its first tuple, independently of the numbering in the supplied
-PyZX witness. The capped ``to_matrix()`` methods are verification helpers;
-extraction and gate synthesis do not construct dense matrices.
+PyZX witness. The capped ``to_matrix()`` methods are verification helpers.
+``PauliCircuit.to_matrix()`` constructs the Clifford matrix from its tableau
+and applies each rotation using the sine/cosine formula for a Pauli exponential.
+Extraction and gate synthesis do not construct dense matrices.
 
 Optional elementary-gate conversion
 -----------------------------------
