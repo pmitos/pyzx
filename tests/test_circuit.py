@@ -549,7 +549,7 @@ class TestPauliExponential(unittest.TestCase):
         expected = np.cos(theta) * np.eye(16) - 1j * np.sin(theta) * pauli
 
         circuit = Circuit(4)
-        circuit.add_gate("PauliExponential", ["X", "Y", "Z"], angle, targets=[0, 2, 3])
+        circuit.add_gate("PauliExponential", ["X", "Y", "Z"], angle, 0, 2, 3)
         graph = circuit.to_graph()
         gadget_degrees = [graph.vertex_degree(v) for v in graph.vertices() if graph.is_phase_gadget(v)]
         self.assertEqual(gadget_degrees, [4])
@@ -559,17 +559,17 @@ class TestPauliExponential(unittest.TestCase):
 
         remapped = Circuit(4)
         remapped.add_circuit(circuit, mask=[3, 2, 0, 1])
-        self.assertEqual(remapped.gates, [PauliExponential("XYZ", angle, targets=[3, 0, 1])])
+        self.assertEqual(remapped.gates, [PauliExponential("XYZ", angle, 3, 0, 1)])
 
         prefix = Circuit(1)
         prefix.add_gate("HAD", 0)
         tensored = prefix @ circuit
-        self.assertEqual(tensored.gates[-1], PauliExponential("XYZ", angle, targets=[1, 3, 4]))
+        self.assertEqual(tensored.gates[-1], PauliExponential("XYZ", angle, 1, 3, 4))
         np.testing.assert_allclose(tensored.to_matrix(), np.kron(prefix.to_matrix(), expected), atol=1e-12)
 
     def test_all_z_scalar_relative_to_parity_gates(self):
         for angle, tcount in ((Fraction(-1, 2), 0), (Fraction(1, 4), 1)):
-            rotation = PauliExponential("ZZ", angle, targets=[0, 2])
+            rotation = PauliExponential("ZZ", angle, 0, 2)
             expected = np.exp(1j * np.pi * float(angle) / 2) * rotation.to_graph().to_matrix()
             self.assertEqual(rotation.tcount(), tcount)
             for gate_class in (ParityPhase, PhaseGadget):
@@ -582,7 +582,7 @@ class TestPauliExponential(unittest.TestCase):
         for pauli, angle in (("XY", Fraction(-1, 4)), ("ZZ", Fraction(0))):
             with self.subTest(pauli=pauli, angle=angle):
                 circuit = Circuit(2)
-                gate = PauliExponential(pauli, angle, targets=[0, 1])
+                gate = PauliExponential(pauli, angle, 0, 1)
                 circuit.add_gate(gate)
                 expected = circuit.to_matrix()
                 quipper = circuit.to_quipper()
@@ -605,7 +605,7 @@ class TestPauliExponential(unittest.TestCase):
         from pyzx.symbolic import new_var
 
         angle = new_var("theta", is_bool=False)
-        graph = PauliExponential("Y", angle, targets=[0]).to_graph()
+        graph = PauliExponential("Y", angle, 0).to_graph()
         bound = graph.substitute_variables({"theta": Fraction(1)})
         np.testing.assert_allclose(bound.to_matrix(), [[0, -1], [1, 0]], atol=1e-12)
 
@@ -614,7 +614,7 @@ class TestPauliExponential(unittest.TestCase):
 
         angle = new_var("theta", is_bool=False) / 2
         circuit = Circuit(2)
-        circuit.add_gate(PauliExponential("ZZ", angle, targets=[0, 1]))
+        circuit.add_gate(PauliExponential("ZZ", angle, 0, 1))
         for export in (circuit.to_qasm, circuit.to_qc, circuit.to_quipper):
             with self.subTest(export=export.__name__):
                 with self.assertRaisesRegex(TypeError, "bind the Pauli exponential angle"):
@@ -625,8 +625,8 @@ class TestPauliExponential(unittest.TestCase):
                  ("ZZ", [0, 0]), ("Z", [-1]), ("Z", [0.5]), ("", []))
         for pauli, targets in cases:
             with self.subTest(pauli=pauli, targets=targets), self.assertRaises(ValueError):
-                PauliExponential(pauli, Fraction(1, 3), targets=targets)
-        gate = PauliExponential("ZY", Fraction(1, 3), targets=[0, 1])
+                PauliExponential(pauli, Fraction(1, 3), *targets)
+        gate = PauliExponential("ZY", Fraction(1, 3), 0, 1)
         for mask in ([0, 0], [0, -1]):
             with self.subTest(mask=mask), self.assertRaises(ValueError):
                 gate.reposition(mask)

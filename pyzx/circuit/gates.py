@@ -951,9 +951,11 @@ class PauliExponential(Gate):
 
     ``pauli`` gives one ``X``, ``Y``, or ``Z`` per target, in the order
     given by ``targets``. It can be a string or a sequence of single letters.
-    Targets must be nonempty, distinct, and nonnegative. ``angle`` is
-    :math:`a`, in multiples of :math:`\pi`, and may be symbolic. Negate
-    the angle to exponentiate the negative of the Pauli product.
+    Pass at least one target as a positional argument, as for
+    :class:`PhaseGadget`. Targets must be distinct and nonnegative.
+    ``angle`` is :math:`a`, in multiples of :math:`\pi`, and may be
+    symbolic. Negate the angle to exponentiate the negative of the Pauli
+    product.
 
     For an all-``Z`` product, :class:`ParityPhase` and :class:`PhaseGadget`
     include an additional scalar :math:`\exp(i\pi a/2)`. Basic gate
@@ -964,10 +966,9 @@ class PauliExponential(Gate):
     name = "PauliExponential"
     as_gadget = True
 
-    def __init__(self, pauli: Sequence[str], angle: FractionLike, targets: Sequence[int]) -> None:
-        targets = tuple(targets)
+    def __init__(self, pauli: Sequence[str], angle: FractionLike, *targets: int) -> None:
         if not targets or any(not isinstance(target, int) or target < 0 for target in targets):
-            raise ValueError("targets must be a nonempty sequence of nonnegative integers")
+            raise ValueError("expected one or more nonnegative integer targets")
         if len(set(targets)) != len(targets):
             raise ValueError("targets must be distinct")
         if len(pauli) != len(targets) or any(axis not in ("X", "Y", "Z") for axis in pauli):
@@ -981,7 +982,8 @@ class PauliExponential(Gate):
         self.targets = targets
 
     def __str__(self) -> str:
-        return f"{self.name}({self.pauli!r}, {self.angle}, targets={self.targets})"
+        targets = ", ".join(str(target) for target in self.targets)
+        return f"{self.name}({self.pauli!r}, {self.angle}, {targets})"
 
     def __eq__(self, other: object) -> bool:
         return (isinstance(other, PauliExponential) and self.index == other.index
