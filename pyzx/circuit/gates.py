@@ -1364,6 +1364,17 @@ class InitAncilla(Gate):
         """Returns (VertexType, phase) for this ancilla state."""
         return self.STATE_MAP[self.state]
 
+    def to_qasm(self) -> str:
+        """Prepare the state on an already declared QASM wire."""
+        instructions = [Reset(self.label).to_qasm()]
+        if self.state in ("+", "-"):
+            instructions.append(HAD(self.label).to_qasm())
+        if self.state == "-":
+            instructions.append(Z(self.label).to_qasm())
+        elif self.state == "1":
+            instructions.append(NOT(self.label).to_qasm())
+        return "\n".join(instructions)
+
     def reposition(self, mask: list[int], bit_mask: list[int] | None = None) -> 'InitAncilla':
         g = self.copy()
         g.label = mask[self.label]

@@ -6,7 +6,7 @@
 Lemma C.2 gives output Pauli strings for the planar rotations. Theorem C.12
 separates those rotations from a residual Clifford map. Here that map is
 reconstructed by projecting its Choi stabilizers, with packed row supports
-and incidence columns. A supplied focused flow is validated and reused.
+and incidence columns. A supplied witness is assumed to be valid focused flow.
 Both extraction entry points return a PauliCircuit; elementary-gate synthesis
 is an explicit, optional conversion through PauliCircuit.to_circuit().
 
@@ -17,34 +17,30 @@ up to a nonzero global scalar. The existing frontier extractor is separate.
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
-from dataclasses import dataclass, field
+from collections.abc import Iterator
+from dataclasses import dataclass
 from fractions import Fraction
-from types import MappingProxyType
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 
 from .circuit import Circuit
 from .circuit.gates import InitAncilla, ParityPhase
 from .flow import gflow, pauli_flow
-from .graph import Graph
 from .graph.base import BaseGraph
 from .symbolic import Poly
 from .utils import EdgeType, VertexType
 
-__all__ = ["Measurement", "PauliPattern", "PauliString", "CliffordMap",
+__all__ = ["PauliString", "CliffordMap",
            "PauliExponential", "PauliCircuit", "PauliExtractionError",
            "extract_pauli", "extract_circuit_pauli"]
 
-_LABELS = frozenset({"XY", "XZ", "YZ", "X", "Y", "Z"})
-_PLANES = frozenset({"XY", "XZ", "YZ"})
 Flow = tuple[dict[Any, int], dict[Any, set[Any]]]
 _Row = tuple[int, int, int]
 
 
 class PauliExtractionError(ValueError):
-    """Invalid pattern, invalid witness, absent flow or unsupported domain."""
+    """Invalid diagram, invalid witness, absent flow or unsupported domain."""
 
 
 def _bits(value: int) -> Iterator[int]:
@@ -61,98 +57,30 @@ def _phase(value: Fraction | int | float) -> Fraction:
 
 
 @dataclass(frozen=True, slots=True)
-class Measurement:
-    """Positive-outcome measurement in Simmons's conventions, in units of pi.
+class _Measurement:
+    """A graph-derived XY measurement or a signed X/Y eigenstate."""
 
-    XY uses ``(|0> + exp(i*pi*angle)|1>)/sqrt(2)``; XZ uses
-    ``cos(pi*angle/2)|0> + sin(pi*angle/2)|1>``; YZ replaces sin by i*sin.
-    Axis labels use angle 0 or 1 for the positive or negative eigenstate.
-    """
-
-    label: str
+    label: Literal["XY", "X", "Y"]
     angle: Fraction = Fraction(0)
 
-    def __post_init__(self) -> None:
-        if self.label not in _LABELS:
-            raise PauliExtractionError(f"unknown measurement label {self.label!r}")
-        object.__setattr__(self, "angle", _phase(self.angle))
-        if self.label not in _PLANES and self.angle.denominator != 1:
-            raise PauliExtractionError("an axis measurement angle must be 0 or 1")
 
-    def infer_pauli(self) -> Measurement:
-        """Replace a planar measurement at an exact Clifford angle by its axis."""
-        if self.label not in _PLANES or self.angle.denominator > 2:
-            return self
-        labels = {"XY": ("X", "Y"), "XZ": ("Z", "X"), "YZ": ("Z", "Y")}
-        quarter = int(2 * self.angle)
-        return Measurement(labels[self.label][quarter % 2], Fraction(quarter // 2))
-
-
-@dataclass(frozen=True)
-class PauliPattern:
-    """A simple labelled open graph with ordered inputs and outputs.
-
-    ``measurements`` covers exactly the non-outputs and supports all six labels.
-    Boundary Hadamards are specified by wire index; output phases are applied
-    before output Hadamards. Angles are rational multiples of pi.
-    """
+@dataclass(frozen=True, slots=True)
+class _ExtractionGraph:
+    """Graph data and boundary corrections used during extraction."""
 
     vertices: tuple[Any, ...]
     edges: tuple[tuple[Any, Any], ...]
     inputs: tuple[Any, ...]
     outputs: tuple[Any, ...]
-    measurements: Mapping[Any, Measurement]
-    input_hadamards: tuple[int, ...] = ()
-    output_hadamards: tuple[int, ...] = ()
-    output_phases: tuple[Fraction, ...] = ()
-    _direct_wires: tuple[Any, ...] = field(default=(), repr=False, compare=False)
-    _output_copies: tuple[tuple[Any, Any, Any], ...] = field(default=(), repr=False, compare=False)
-
-    def __post_init__(self) -> None:
-        vertices = tuple(self.vertices)
-        positions = {v: i for i, v in enumerate(vertices)}
-        if len(positions) != len(vertices):
-            raise PauliExtractionError("duplicate vertex ids")
-        for name in ("inputs", "outputs"):
-            boundary = tuple(getattr(self, name))
-            if len(set(boundary)) != len(boundary) or not set(boundary) <= positions.keys():
-                raise PauliExtractionError(f"{name} must be distinct vertices")
-            object.__setattr__(self, name, boundary)
-        seen = set()
-        edges = []
-        for u, v in self.edges:
-            if u not in positions or v not in positions or u == v:
-                raise PauliExtractionError("the open graph must be simple")
-            key = tuple(sorted((positions[u], positions[v])))
-            if key in seen:
-                raise PauliExtractionError("the open graph must be simple")
-            seen.add(key)
-            edges.append((u, v))
-        measurements = dict(self.measurements)
-        if set(measurements) != set(vertices) - set(self.outputs):
-            raise PauliExtractionError("measurements must cover exactly the non-outputs")
-        if not all(isinstance(m, Measurement) for m in measurements.values()):
-            raise TypeError("measurements must contain Measurement values")
-        object.__setattr__(self, "vertices", vertices)
-        object.__setattr__(self, "edges", tuple(edges))
-        object.__setattr__(self, "measurements", MappingProxyType(measurements))
-        for name, count in (("input_hadamards", len(self.inputs)),
-                            ("output_hadamards", len(self.outputs))):
-            wires = tuple(getattr(self, name))
-            if len(set(wires)) != len(wires) or any(
-                isinstance(q, bool) or not isinstance(q, int) or not 0 <= q < count for q in wires
-            ):
-                raise PauliExtractionError(f"invalid {name} wire indices")
-            object.__setattr__(self, name, wires)
-        phases = tuple(_phase(a) for a in self.output_phases)
-        if not phases:
-            phases = (Fraction(0),) * len(self.outputs)
-        if len(phases) != len(self.outputs):
-            raise PauliExtractionError("one output phase is required per output")
-        object.__setattr__(self, "output_phases", phases)
+    measurements: dict[Any, _Measurement]
+    input_hadamards: tuple[int, ...]
+    output_hadamards: tuple[int, ...]
+    output_phases: tuple[Fraction, ...]
+    direct_wires: tuple[Any, ...]
+    output_copies: tuple[tuple[Any, Any, Any], ...]
 
     @classmethod
-    def from_graph(cls, graph: BaseGraph, *, infer_pauli: bool = True) -> PauliPattern:
+    def from_graph(cls, graph: BaseGraph, *, infer_pauli: bool = True) -> _ExtractionGraph:
         """Read a graph-like ZX diagram without mutating or simplifying it.
 
         A measured Z-spider of phase a represents the XY measurement at -a.
@@ -204,6 +132,8 @@ class PauliPattern:
             return aliases[b] if b in aliases else b if b in direct else neighbors[b][0]
         pattern_vertices = [v for v in vertices if v not in boundaries] + direct
         pattern_inputs = tuple(vertex(b) for b in ins)
+        if len(set(pattern_inputs)) != len(pattern_inputs):
+            raise PauliExtractionError("inputs must be distinct vertices")
         pattern_outputs = tuple(vertex(b) for b in outs)
         output_set = set(pattern_outputs)
         measurements = {}
@@ -212,8 +142,12 @@ class PauliPattern:
                 phase = graph.phase(v)
                 if isinstance(phase, Poly):
                     raise PauliExtractionError("Pauli extraction requires rational, non-symbolic phases")
-                measurement = Measurement("XY", _phase(-phase))
-                measurements[v] = measurement.infer_pauli() if infer_pauli else measurement
+                angle = _phase(-phase)
+                if infer_pauli and angle.denominator <= 2:
+                    quarter = int(2 * angle)
+                    measurements[v] = _Measurement("Y" if quarter % 2 else "X", Fraction(quarter // 2))
+                else:
+                    measurements[v] = _Measurement("XY", angle)
         ih = tuple(q for q, b in enumerate(ins) if b not in direct and
                    graph.edge_type(graph.edge(b, neighbors[b][0])) == EdgeType.HADAMARD)
         oh = tuple(q for q, b in enumerate(outs) if
@@ -241,7 +175,7 @@ class PauliPattern:
                 a, out = added
                 pattern_vertices.extend(added)
                 edges.extend(((v, a), (a, out)))
-                measurements[a] = Measurement("X" if infer_pauli else "XY")
+                measurements[a] = _Measurement("X" if infer_pauli else "XY")
                 expanded_outputs.append(out)
                 phases.append(Fraction(0))
                 output_copies.append((v, a, out))
@@ -252,66 +186,7 @@ class PauliPattern:
         return cls(tuple(pattern_vertices), tuple(edges), pattern_inputs, tuple(expanded_outputs),
                    measurements, ih, oh, tuple(phases), tuple(direct), tuple(output_copies))
 
-    def find_flow(self) -> Flow | None:
-        """Find focused flow using the public M/N equations.
-
-        Equal input/output counts make M square, so its right inverse is unique.
-        This is direct GF(2) inversion and a DAG check (Mitosek--Backens,
-        DOI 10.1088/1751-8121/ae2999). For more outputs, reduce XZ/YZ/Z
-        labels to Pauli roots and measurement leaves and reuse the cubic finder.
-        """
-        if len(self.inputs) > len(self.outputs):
-            raise PauliExtractionError("Pauli extraction requires at least as many outputs as inputs")
-        if len(self.inputs) < len(self.outputs):
-            return _find_expanded_flow(self)
-        pos, adjacency = _adjacency(self)
-        measured = list(self.measurements)
-        correctors = [v for v in self.vertices if v not in set(self.inputs)]
-        indices = {v: j for j, v in enumerate(correctors)}
-        size = len(measured)
-        matrix, order = [], []
-        for i, v in enumerate(measured):
-            label = self.measurements[v].label
-            adjacent = sum(1 << j for j, w in enumerate(correctors) if adjacency[pos[v]] & (1 << pos[w]))
-            own = 1 << indices[v] if v in indices else 0
-            row = adjacent if label in {"XY", "X", "Y"} else own
-            if label == "Y":
-                row ^= own
-            matrix.append(row | (1 << (size + i)))
-            order.append(own if label == "XY" else adjacent ^ own if label == "XZ" else adjacent if label == "YZ" else 0)
-        for col in range(size):
-            pivot = next((j for j in range(col, size) if matrix[j] & (1 << col)), None)
-            if pivot is None:
-                return None
-            matrix[col], matrix[pivot] = matrix[pivot], matrix[col]
-            for j in range(size):
-                if j != col and matrix[j] & (1 << col):
-                    matrix[j] ^= matrix[col]
-        inverse = [row >> size for row in matrix]
-        successors = [0] * size
-        for v, demand in enumerate(order):
-            product = 0
-            for j in _bits(demand):
-                product ^= inverse[j]
-            for u in _bits(product):
-                successors[u] |= 1 << v
-        active = (1 << size) - 1
-        layers = dict.fromkeys(self.outputs, 0)
-        depth = 0
-        while active:
-            ready = [i for i in _bits(active) if not successors[i] & active]
-            if not ready:
-                return None
-            depth += 1
-            for i in ready:
-                layers[measured[i]] = depth
-                active ^= 1 << i
-        corrections = {v: {w for j, w in enumerate(correctors) if inverse[j] & (1 << i)}
-                       for i, v in enumerate(measured)}
-        return {v: depth - layer for v, layer in layers.items()}, corrections
-
-
-def _adjacency(pattern: PauliPattern) -> tuple[dict[Any, int], list[int]]:
+def _adjacency(pattern: _ExtractionGraph) -> tuple[dict[Any, int], list[int]]:
     positions = {v: i for i, v in enumerate(pattern.vertices)}
     adjacency = [0] * len(positions)
     for u, v in pattern.edges:
@@ -320,50 +195,14 @@ def _adjacency(pattern: PauliPattern) -> tuple[dict[Any, int], list[int]]:
     return positions, adjacency
 
 
-def _find_expanded_flow(pattern: PauliPattern) -> Flow | None:
-    """Reduce all six labels to XY/X/Y without changing the open boundaries.
-
-    XZ becomes a Y root with an XY leaf; YZ becomes an X root with an XY
-    leaf; Z becomes an X root with an X leaf. A correction for the leaf,
-    restricted to the old vertices, corrects the original measurement.
-    Focusing at the other leaves enforces exclusion of their old planar/Z
-    roots. The leaf order also enforces the original planar dependencies.
-    Only labels matter here, so arbitrary non-Clifford XY phases suffice.
-    """
-    graph = Graph()
-    phases = {"XY": Fraction(1, 4), "X": Fraction(0), "Y": Fraction(1, 2)}
-    roots, targets = {}, {}
-    for v in pattern.vertices:
-        label = pattern.measurements[v].label if v in pattern.measurements else "X"
-        root_label = "Y" if label == "XZ" else "X" if label in {"YZ", "Z"} else label
-        roots[v] = graph.add_vertex(VertexType.Z, phase=phases[root_label])
-        targets[v] = roots[v]
-        if label in {"XZ", "YZ", "Z"}:
-            leaf = graph.add_vertex(VertexType.Z, phase=phases["X" if label == "Z" else "XY"])
-            graph.add_edge((roots[v], leaf), EdgeType.HADAMARD)
-            targets[v] = leaf
-    for u, v in pattern.edges:
-        graph.add_edge((roots[u], roots[v]), EdgeType.HADAMARD)
-    boundaries = []
-    for boundary in (pattern.inputs, pattern.outputs):
-        wires = []
-        for v in boundary:
-            b = graph.add_vertex(VertexType.BOUNDARY)
-            graph.add_edge((b, roots[v]))
-            wires.append(b)
-        boundaries.append(tuple(wires))
-    graph.set_inputs(boundaries[0])
-    graph.set_outputs(boundaries[1])
-    flow = pauli_flow(graph)
-    if flow is None:
-        return None
-    forward, corrections = flow
-    original = {root: v for v, root in roots.items()}
-    return (
-        {v: forward[targets[v]] for v in pattern.vertices},
-        {v: {original[w] for w in corrections[targets[v]] if w in original}
-         for v in pattern.measurements},
-    )
+def _output_adjacency(adjacency: list[int], output_positions: list[int]) -> list[int]:
+    """Pack each vertex's output neighbours in output wire order."""
+    columns = [0] * len(adjacency)
+    for j, i in enumerate(output_positions):
+        bit = 1 << j
+        for neighbour in _bits(adjacency[i]):
+            columns[neighbour] |= bit
+    return columns
 
 
 @dataclass(frozen=True, slots=True)
@@ -611,64 +450,31 @@ def _multiply(a: _Row, b: _Row) -> _Row:
     return x, z, a[2] ^ b[2] ^ ((phase // 2) & 1)
 
 
-def _odd(s: int, adjacency: list[int]) -> int:
-    value = 0
-    for v in _bits(s):
-        value ^= adjacency[v]
-    return value
-
-
-def _checked_corrections(
-    pattern: PauliPattern, flow: Flow, positions: dict[Any, int], adjacency: list[int],
-) -> tuple[dict[Any, int], dict[Any, int], tuple[tuple[Any, ...], ...]]:
-    """Validate the full focused witness, including incomparable vertices."""
+def _flow_layers(pattern: _ExtractionGraph, flow: Flow) -> tuple[tuple[Any, ...], ...]:
+    """Check the witness shape and group vertices in output-first order."""
     forward, correction_sets = flow
-    measured = set(pattern.measurements)
-    if set(forward) != set(pattern.vertices) or set(correction_sets) != measured:
+    vertices = set(pattern.vertices)
+    if set(forward) != vertices or set(correction_sets) != set(pattern.measurements):
         raise PauliExtractionError("flow domains do not match the pattern")
     if any(isinstance(d, bool) or not isinstance(d, int) or d < 0 for d in forward.values()):
         raise PauliExtractionError("flow layers must be nonnegative integers")
-    last = max(forward.values(), default=0)
-    depth = {v: last - layer + (not pattern.outputs) for v, layer in forward.items()}
-    if {v for v, d in depth.items() if d == 0} != set(pattern.outputs):
+    end = max(forward.values(), default=0) + (not pattern.outputs)
+    groups: dict[int, list[Any]] = {}
+    for v in pattern.vertices:
+        groups.setdefault(end - forward[v], []).append(v)
+    if set(groups.pop(0, ())) != set(pattern.outputs):
         raise PauliExtractionError("flow outputs must be exactly layer zero")
-    labels = {v: m.label for v, m in pattern.measurements.items()}
-    masks = {label: sum(1 << positions[v] for v in labels if labels[v] == label)
-             for label in _LABELS}
-    outputs = sum(1 << positions[v] for v in pattern.outputs)
-    planar = masks["XY"] | masks["XZ"] | masks["YZ"]
-    allowed = set(pattern.vertices) - set(pattern.inputs)
-    corrections, odds = {}, {}
-    for u in pattern.measurements:
-        if not set(correction_sets[u]) <= allowed:
+    allowed = vertices - set(pattern.inputs)
+    for members in correction_sets.values():
+        if not members:
+            raise PauliExtractionError("correction sets must be nonempty")
+        if not allowed.issuperset(members):
             raise PauliExtractionError("correction sets contain an input or an unknown vertex")
-        s = sum(1 << positions[v] for v in correction_sets[u])
-        odd = _odd(s, adjacency)
-        bit = 1 << positions[u]
-        own, own_odd = bool(s & bit), bool(odd & bit)
-        valid = {"XY": not own and own_odd, "XZ": own and own_odd,
-                 "YZ": own and not own_odd, "X": own_odd,
-                 "Y": own != own_odd, "Z": own}[labels[u]]
-        focus_bad = ((s & (masks["XZ"] | masks["YZ"] | masks["Z"]))
-                     | (odd & (masks["XY"] | masks["X"]))
-                     | ((s ^ odd) & masks["Y"])) & ~bit
-        successors = ((s & (planar | masks["Z"] | outputs))
-                      | (odd & (planar | masks["X"] | outputs))
-                      | ((s ^ odd) & masks["Y"])) & ~bit
-        if not valid or focus_bad or any(
-            depth[u] <= depth[pattern.vertices[v]] for v in _bits(successors)
-        ):
-            raise PauliExtractionError(f"supplied flow is not a focused Pauli flow at vertex {u}")
-        corrections[u], odds[u] = s, odd
-    layers = (tuple(pattern.outputs),) + tuple(
-        tuple(v for v in pattern.vertices if depth[v] == d)
-        for d in sorted(set(depth.values()) - {0})
-    )
-    return corrections, odds, layers
+    return (pattern.outputs,) + tuple(tuple(groups[d]) for d in sorted(groups))
 
 
 def _residual_clifford(
-    pattern: PauliPattern, positions: dict[Any, int], adjacency: list[int],
+    pattern: _ExtractionGraph, positions: dict[Any, int], adjacency: list[int],
 ) -> CliffordMap:
     """Project the Clifford Choi stabilizers, updating only affected rows."""
     g = pattern
@@ -695,8 +501,7 @@ def _residual_clifford(
         i = positions[v]
         bit = 1 << i
         label = measurement.label
-        axis = ("X" if label == "XY" else "Z") if label in _PLANES else label
-        anti = (zs[i] if axis == "X" else xs[i] if axis == "Z" else xs[i] ^ zs[i]) & active
+        anti = (xs[i] ^ zs[i] if label == "Y" else zs[i]) & active
         if not anti:
             raise PauliExtractionError(
                 "residual measurement has no pivot; pattern is not an isometry"
@@ -717,7 +522,7 @@ def _residual_clifford(
         # factor is I or that Pauli; projection removes it and retains its
         # signed outcome. Dead row bits in the columns are masked by active.
         local = (xs[i] | zs[i]) & active
-        negative = int(label not in _PLANES and measurement.angle == 1)
+        negative = int(label != "XY" and measurement.angle == 1)
         for j in _bits(local):
             x, z, sign = rows[j]
             rows[j] = x & ~bit, z & ~bit, sign ^ negative
@@ -754,7 +559,7 @@ def _hadamard(pauli: PauliString, mask: int) -> PauliString:
 
 
 def extract_pauli(
-    pattern: PauliPattern | BaseGraph, *, flow: Flow | None = None,
+    g: BaseGraph, *, flow: Flow | None = None,
     infer_pauli: bool = True,
 ) -> PauliCircuit:
     """Return a :class:`PauliCircuit` following Simmons's extraction.
@@ -763,79 +568,78 @@ def extract_pauli(
     synthesising elementary gates. Use :meth:`PauliCircuit.to_circuit` for an
     explicit basic gate decomposition, preparing extra outputs in ket plus.
 
-    A graph input must be graph-like; it is not mutated. A supplied ``flow``
-    is the ``(layers, corrections)`` pair returned by :func:`pyzx.flow.pauli_flow`
-    on the same graph, or by :meth:`PauliPattern.find_flow` for explicit labels.
-    The witness must be focused, forward, and include correction sets.
-    ``infer_pauli`` applies only to graph conversion; use False with a gflow
-    witness. Grounded graphs, fewer outputs than inputs and symbolic phases are
-    rejected. Results omit the global scalar.
+    A graph input must be graph-like and is left unchanged. With ``flow=None``,
+    this calls :func:`pyzx.flow.pauli_flow`. A supplied ``flow`` is assumed to
+    be a valid, focused, forward ``(layers, corrections)`` witness for the same
+    graph and inferred measurement labels. Only its structure is checked.
+    Set ``infer_pauli=False`` to keep all measured spiders as XY and use gflow,
+    including when supplying a gflow witness. Grounds, fewer outputs than
+    inputs and symbolic phases are rejected. Results omit the global scalar.
     """
-    if isinstance(pattern, BaseGraph):
-        graph = pattern
-        pattern = PauliPattern.from_graph(graph, infer_pauli=infer_pauli)
-        if len(pattern.inputs) > len(pattern.outputs):
-            raise PauliExtractionError("Pauli extraction requires at least as many outputs as inputs")
-        if flow is None:
-            flow = pauli_flow(graph) if infer_pauli else gflow(graph)
-            if flow is None:
-                raise PauliExtractionError("the graph has no Pauli flow")
-        if flow is not None and (pattern._direct_wires or pattern._output_copies):
-            forward, old_corrections = flow
-            added = {v for _, measured, out in pattern._output_copies for v in (measured, out)}
-            if (set(forward) != set(pattern.vertices) - set(pattern._direct_wires) - added
-                or set(old_corrections) != set(pattern.measurements) -
-                    {measured for _, measured, _ in pattern._output_copies}):
-                raise PauliExtractionError("flow domains do not match the pattern")
-            if any(isinstance(d, bool) or not isinstance(d, int) or d < 0 for d in forward.values()):
-                raise PauliExtractionError("flow layers must be nonnegative integers")
-            forward = dict(forward)
-            last = max(forward.values(), default=0)
-            forward.update(dict.fromkeys(pattern._direct_wires, last))
-            lifted_corrections = {v: set(s) for v, s in old_corrections.items()}
-            if pattern._output_copies:
-                forward = {v: d + 1 for v, d in forward.items()}
-                for root, measured, out in pattern._output_copies:
-                    forward[measured], forward[out] = last, last + 1
-                    for members in lifted_corrections.values():
-                        if root in members:
-                            members.add(out)
-                    lifted_corrections[measured] = {out}
-            flow = forward, lifted_corrections
-    if not isinstance(pattern, PauliPattern):
-        raise TypeError("extract_pauli expects a PauliPattern or a PyZX graph")
-    g = pattern
-    if len(g.inputs) > len(g.outputs):
+    if not isinstance(g, BaseGraph):
+        raise TypeError("extract_pauli expects a PyZX graph")
+    pattern = _ExtractionGraph.from_graph(g, infer_pauli=infer_pauli)
+    if len(pattern.inputs) > len(pattern.outputs):
         raise PauliExtractionError("Pauli extraction requires at least as many outputs as inputs")
     if flow is None:
-        flow = pattern.find_flow()
+        flow = pauli_flow(g) if infer_pauli else gflow(g)
         if flow is None:
-            raise PauliExtractionError("the pattern has no Pauli flow")
+            raise PauliExtractionError("the graph has no Pauli flow")
+    if pattern.direct_wires or pattern.output_copies:
+        forward, old_corrections = flow
+        added = {v for _, measured, out in pattern.output_copies for v in (measured, out)}
+        if (set(forward) != set(pattern.vertices) - set(pattern.direct_wires) - added
+            or set(old_corrections) != set(pattern.measurements) -
+                {measured for _, measured, _ in pattern.output_copies}):
+            raise PauliExtractionError("flow domains do not match the pattern")
+        if any(isinstance(d, bool) or not isinstance(d, int) or d < 0 for d in forward.values()):
+            raise PauliExtractionError("flow layers must be nonnegative integers")
+        forward = dict(forward)
+        last = max(forward.values(), default=0)
+        forward.update(dict.fromkeys(pattern.direct_wires, last))
+        lifted_corrections = {v: set(s) for v, s in old_corrections.items()}
+        if pattern.output_copies:
+            forward = {v: d + 1 for v, d in forward.items()}
+            for root, measured, out in pattern.output_copies:
+                forward[measured], forward[out] = last, last + 1
+                for members in lifted_corrections.values():
+                    if root in members:
+                        members.add(out)
+                lifted_corrections[measured] = {out}
+        flow = forward, lifted_corrections
     positions, adjacency = _adjacency(pattern)
-    corrections, odds, layers = _checked_corrections(pattern, flow, positions, adjacency)
-    output_positions = [positions[v] for v in g.outputs]
+    layers = _flow_layers(pattern, flow)
+    _, correction_sets = flow
+    output_positions = [positions[v] for v in pattern.outputs]
+    output_neighbours = []
+    if any(m.label == "XY" and m.angle for m in pattern.measurements.values()):
+        output_neighbours = _output_adjacency(adjacency, output_positions)
+    y_mask = sum(1 << positions[v] for v, m in pattern.measurements.items() if m.label == "Y")
     negative_axes = sum(
         1 << positions[v]
         for v, m in pattern.measurements.items()
-        if m.label not in _PLANES and m.angle == 1
+        if m.label != "XY" and m.angle == 1
     )
     rotations = []
     for layer in reversed(layers[1:]):
         for v in layer:
             measurement = pattern.measurements[v]
-            if measurement.label not in _PLANES or measurement.angle == 0:
+            if measurement.label != "XY" or measurement.angle == 0:
                 continue
-            s, odd = corrections[v], odds[v]
+            s = sum(1 << positions[w] for w in correction_sets[v])
             # Simmons (33)--(35): induced edges, pairs of Ys, absorbed negatives.
-            edge_count = sum((adjacency[i] & s & ((1 << i) - 1)).bit_count() for i in _bits(s))
-            negative = (
-                edge_count + (s & odd).bit_count() // 2 + ((s | odd) & negative_axes).bit_count()
-            ) & 1
+            edge_count = z = 0
+            for i in _bits(s):
+                edge_count += (adjacency[i] & s & ((1 << i) - 1)).bit_count()
+                z ^= output_neighbours[i]
             x = sum(1 << j for j, i in enumerate(output_positions) if s & (1 << i))
-            z = sum(1 << j for j, i in enumerate(output_positions) if odd & (1 << i))
-            pauli = PauliString(len(g.outputs), x, z, -1 if negative else 1)
-            angle = measurement.angle if measurement.label == "YZ" else -measurement.angle
-            rotations.append(PauliExponential(pauli, angle, v))
+            # On measured vertices, focused flow gives e_v XOR (p(v) intersect Y).
+            measured_odd = (1 << positions[v]) ^ (s & y_mask)
+            y_count = (s & measured_odd).bit_count() + (x & z).bit_count()
+            negatives = ((s | measured_odd) & negative_axes).bit_count()
+            negative = (edge_count + y_count // 2 + negatives) & 1
+            pauli = PauliString(len(pattern.outputs), x, z, -1 if negative else 1)
+            rotations.append(PauliExponential(pauli, -measurement.angle, v))
     clifford = _residual_clifford(pattern, positions, adjacency)
     xs, zs = list(clifford.x_images), list(clifford.z_images)
     for q in pattern.input_hadamards:
@@ -849,13 +653,13 @@ def extract_pauli(
     for q, angle in enumerate(pattern.output_phases):
         if angle != 0:
             rotations.append(
-                PauliExponential(_hadamard(PauliString(len(g.outputs), 0, 1 << q), h_mask), angle)
+                PauliExponential(_hadamard(PauliString(len(pattern.outputs), 0, 1 << q), h_mask), angle)
             )
-    return PauliCircuit(clifford, tuple(rotations), g.inputs, g.outputs, layers)
+    return PauliCircuit(clifford, tuple(rotations), pattern.inputs, pattern.outputs, layers)
 
 
 def extract_circuit_pauli(
-    g: PauliPattern | BaseGraph, *, flow: Flow | None = None,
+    g: BaseGraph, *, flow: Flow | None = None,
     infer_pauli: bool = True,
 ) -> PauliCircuit:
     """Return a :class:`PauliCircuit`, as :func:`extract_pauli` does.

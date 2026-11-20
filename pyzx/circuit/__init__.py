@@ -25,7 +25,7 @@ from ..tensor import TensorStrategy
 from ..utils import EdgeType
 from .gates import (CCZ, CHAD, CNOT, CRX, CRY, CRZ, CSWAP, CSX, CU, CU3, CY,
                     CZ, HAD, NOT, RXX, RZZ, SWAP, SX, U2, U3, XCX,
-                    ConditionalGate, CPhase, FSim, Gate, Measurement,
+                    ConditionalGate, CPhase, FSim, Gate, InitAncilla, Measurement,
                     ParityPhase, PhaseGadget, S, T, Tofolli, XPhase, Y, YPhase,
                     Z, ZPhase, gate_types)
 
@@ -452,14 +452,23 @@ class Circuit:
         return s
 
     def to_qasm(self, version: int = 2) -> str:
-        """Produces a QASM description of the circuit."""
+        """Produce a QASM description with all prepared wires declared.
+
+        ``InitAncilla`` labels must occupy consecutive slots after the input
+        wires. The QASM program uses a fixed register and prepares those
+        wires with explicit resets and gates.
+        """
         assert version in [2, 3]
+        ancillas = [g.label for g in self.gates if isinstance(g, InitAncilla)]
+        register_size = self.qubits + len(ancillas)
+        if set(ancillas) != set(range(self.qubits, register_size)):
+            raise ValueError("QASM export requires consecutive ancilla labels after the input wires")
         if version == 3:
             s = """OPENQASM 3;\ninclude "stdgates.inc";\n"""
-            s += "qubit[{!s}] q;\n".format(self.qubits)
+            s += "qubit[{!s}] q;\n".format(register_size)
         else:
             s = """OPENQASM 2.0;\ninclude "qelib1.inc";\n"""
-            s += "qreg q[{!s}];\n".format(self.qubits)
+            s += "qreg q[{!s}];\n".format(register_size)
         # Collect classical register declarations from measurement and conditional gates.
         cregs: dict[str, int] = {}
         for g in self.gates:

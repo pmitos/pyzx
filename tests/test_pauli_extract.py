@@ -1,9 +1,8 @@
-"""Simmons extraction checked against circuit matrices and direct MBQC sums."""
+"""Simmons extraction checked against circuit and ZX-diagram matrices."""
 
 import itertools
 import random
 import unittest
-from dataclasses import replace
 from fractions import Fraction
 from unittest.mock import patch
 
@@ -12,47 +11,37 @@ import numpy as np
 import pyzx as zx
 
 from pyzx import Circuit, Graph, simplify
-from pyzx.circuit.gates import InitAncilla
+from pyzx.circuit.gates import InitAncilla, Reset
 from pyzx.flow import gflow, pauli_flow
+from pyzx.graph.base import BaseGraph
 from pyzx.pauli_extract import (
-    CliffordMap, Measurement, PauliExtractionError, PauliPattern, PauliString,
+    CliffordMap, PauliExtractionError, PauliString,
     extract_circuit_pauli, extract_pauli,
 )
 from pyzx.symbolic import new_var
 from pyzx.utils import EdgeType, VertexType
 
 
-def pattern_matrix(pattern: PauliPattern) -> np.ndarray:
-    """Independent positive-outcome state sum; wire zero is most significant.
-
-    This uses measurement bras and graph-state amplitudes, without flow,
-    stabilizer arithmetic, Pauli-string extraction or gate synthesis.
-    """
-    result = np.zeros((2 ** len(pattern.outputs), 2 ** len(pattern.inputs)), dtype=complex)
-    for assignment in itertools.product((0, 1), repeat=len(pattern.vertices)):
-        bits = dict(zip(pattern.vertices, assignment))
-        amplitude = complex(2 ** (-(len(pattern.vertices) - len(pattern.inputs)) / 2))
-        amplitude *= (-1) ** sum(bits[u] * bits[v] for u, v in pattern.edges)
-        for v, measurement in pattern.measurements.items():
-            angle = float(measurement.angle) * np.pi
-            label = measurement.label
-            if label == "XY":
-                bra = np.array([1, np.exp(-1j * angle)]) / np.sqrt(2)
-            elif label == "XZ":
-                bra = np.array([np.cos(angle / 2), np.sin(angle / 2)])
-            elif label == "YZ":
-                bra = np.array([np.cos(angle / 2), -1j * np.sin(angle / 2)])
-            elif label == "X":
-                bra = np.array([1, (-1) ** int(measurement.angle)]) / np.sqrt(2)
-            elif label == "Y":
-                bra = np.array([1, -1j * (-1) ** int(measurement.angle)]) / np.sqrt(2)
-            else:
-                bra = np.array([1, 0] if measurement.angle == 0 else [0, 1])
-            amplitude *= bra[bits[v]]
-        row = sum(bits[v] << (len(pattern.outputs) - 1 - j) for j, v in enumerate(pattern.outputs))
-        col = sum(bits[v] << (len(pattern.inputs) - 1 - j) for j, v in enumerate(pattern.inputs))
-        result[row, col] += amplitude
-    return result
+def open_graph(
+    phases: tuple[Fraction | int, ...], edges: tuple[tuple[int, int], ...],
+    inputs: tuple[int, ...], outputs: tuple[int, ...],
+) -> BaseGraph[int, tuple[int, int]]:
+    """Build a graph-like ZX diagram from spiders and boundary positions."""
+    g = Graph()
+    spiders = [g.add_vertex(VertexType.Z, phase=phase) for phase in phases]
+    for u, v in edges:
+        g.add_edge((spiders[u], spiders[v]), EdgeType.HADAMARD)
+    boundaries = []
+    for wires in (inputs, outputs):
+        boundary = []
+        for i in wires:
+            b = g.add_vertex(VertexType.BOUNDARY)
+            g.add_edge((b, spiders[i]))
+            boundary.append(b)
+        boundaries.append(tuple(boundary))
+    g.set_inputs(boundaries[0])
+    g.set_outputs(boundaries[1])
+    return g
 
 
 class TestPauliExtract(unittest.TestCase):
@@ -95,80 +84,15 @@ class TestPauliExtract(unittest.TestCase):
                     self.assert_same(expected, result.to_circuit().to_matrix())
                     self.assertEqual(graph.to_json(), original)
 
-    def test_all_six_labels_and_signed_outcomes(self):
-        labels = ("XY", "XZ", "YZ", "X", "Y", "Z")
-        vertices = (7, 31, 105)
-        possible_edges = tuple(itertools.combinations(vertices, 2))
-        checked = 0
-        for edge_bits in range(8):
-            edges = tuple(e for j, e in enumerate(possible_edges) if edge_bits & (1 << j))
-            for a, b in itertools.product(labels, repeat=2):
-                for signs in itertools.product((0, 1), repeat=2):
-                    measurements = {
-                        v: Measurement(label, Fraction(sign) if len(label) == 1 else Fraction(1 + 2 * sign, 3))
-                        for v, label, sign in zip(vertices[:2], (a, b), signs)
-                    }
-                    pattern = PauliPattern(vertices, edges, (7,), (105,), measurements)
-                    flow = pattern.find_flow()
-                    if flow is None:
-                        continue
-                    with self.subTest(edges=edge_bits, labels=(a, b), signs=signs):
-                        result = extract_pauli(pattern, flow=flow)
-                        expected = pattern_matrix(pattern)
-                        self.assert_same(expected, result.to_matrix())
-                        self.assert_same(expected, result.to_circuit().to_matrix())
-                    checked += 1
-        self.assertEqual(checked, 180)
-
-    def test_mixed_patterns_with_overlapping_boundaries(self):
-        rng = random.Random(20261019)
-        positives = 0
-        for _ in range(240):
-            vertices = tuple(range(rng.randrange(3, 7)))
-            edges = tuple(e for e in itertools.combinations(vertices, 2) if rng.random() < 0.4)
-            inputs = tuple(rng.sample(vertices, 2))
-            outputs = tuple(rng.sample(vertices, 2))
-            measurements = {}
-            for v in set(vertices) - set(outputs):
-                label = rng.choice(("XY", "XZ", "YZ", "X", "Y", "Z"))
-                measurements[v] = Measurement(label, Fraction(rng.randrange(2)) if len(label) == 1 else Fraction(1, 5))
-            pattern = PauliPattern(vertices, edges, inputs, outputs, measurements)
-            flow = pattern.find_flow()
-            if flow is not None:
-                expected = pattern_matrix(pattern)
-                result = extract_pauli(pattern, flow=flow)
-                self.assert_same(expected, result.to_matrix())
-                self.assert_same(expected, result.to_circuit().to_matrix())
-                positives += 1
-        self.assertGreaterEqual(positives, 20)
-
-    def test_unbalanced_patterns_all_labels_against_state_sum(self):
-        vertices = (7, 31, 105)
-        possible_edges = tuple(itertools.combinations(vertices, 2))
-        checked = set()
-        for outputs in ((31, 105), (105, 7)):
-            measured = next(v for v in vertices if v not in outputs)
-            for edge_bits in range(8):
-                edges = tuple(e for j, e in enumerate(possible_edges) if edge_bits & (1 << j))
-                for label in ("XY", "XZ", "YZ", "X", "Y", "Z"):
-                    for sign in (0, 1):
-                        angle = Fraction(sign) if len(label) == 1 else Fraction(1 + 2 * sign, 3)
-                        pattern = PauliPattern(vertices, edges, (7,), outputs,
-                                               {measured: Measurement(label, angle)})
-                        flow = pattern.find_flow()
-                        if flow is None:
-                            continue
-                        with self.subTest(outputs=outputs, edges=edge_bits, label=label, sign=sign):
-                            result = extract_pauli(pattern, flow=flow)
-                            expected = pattern_matrix(pattern)
-                            actual = result.to_matrix()
-                            self.assert_same(expected, actual)
-                            self.assert_same(expected, result.to_circuit().to_matrix())
-                            self.assertEqual((result.n_inputs, result.n_outputs, result.n_qubits), (1, 2, 2))
-                            self.assertEqual(len(result.clifford.stabilizers), 1)
-                            np.testing.assert_allclose(actual.conj().T @ actual, np.eye(2), atol=1e-9)
-                        checked.add(label)
-        self.assertEqual(checked, {"XY", "XZ", "YZ", "X", "Y", "Z"})
+    def test_negative_pauli_input_measurements(self):
+        for phase, x_image in ((Fraction(1), "-Z"), (Fraction(1, 2), "-Y")):
+            with self.subTest(phase=phase):
+                graph = open_graph((phase, 0), ((0, 1),), (0,), (1,))
+                result = extract_pauli(graph)
+                self.assertEqual(tuple(map(str, result.clifford.x_images)), (x_image,))
+                self.assertEqual(tuple(map(str, result.clifford.z_images)), ("+X",))
+                self.assertEqual(result.rotations, ())
+                self.assert_same(graph.to_matrix(), result.to_matrix())
 
     def test_random_unbalanced_circuits_and_state_preparations(self):
         rng = random.Random(20261104)
@@ -216,59 +140,6 @@ class TestPauliExtract(unittest.TestCase):
                     graph.set_outputs(tuple(reversed(graph.outputs())))
                     self.assert_same(expected, extract_pauli(graph).to_matrix())
 
-    def test_unbalanced_flow_against_exhaustive_correction_search(self):
-        rng = random.Random(20261105)
-        positives = negatives = 0
-        for case in range(120):
-            vertices = tuple(range(3 + case % 3))
-            edges = tuple(e for e in itertools.combinations(vertices, 2) if rng.random() < 0.45)
-            inputs = tuple(rng.sample(vertices, case % 2))
-            outputs = tuple(rng.sample(vertices, len(inputs) + 1 + case % 2))
-            measurements = {v: Measurement(label, Fraction(rng.randrange(2)) if len(label) == 1 else Fraction(1, 5))
-                            for v in vertices if v not in outputs
-                            for label in (rng.choice(("XY", "XZ", "YZ", "X", "Y", "Z")),)}
-            pattern = PauliPattern(vertices, edges, inputs, outputs, measurements)
-            # Exhaust all correction subsets directly from the focused-flow
-            # definition, then peel those with no remaining planar dependency.
-            # This uses neither the leaf reduction nor binary elimination.
-            correctors = tuple(v for v in vertices if v not in inputs)
-            candidates = {v: [] for v in measurements}
-            for bits in range(1 << len(correctors)):
-                s = {v for j, v in enumerate(correctors) if bits & (1 << j)}
-                odd = {v for v in vertices if sum(
-                    (u, v) in edges or (v, u) in edges for u in s) % 2}
-                for u, measurement in measurements.items():
-                    own, own_odd = u in s, u in odd
-                    local = {"XY": not own and own_odd, "XZ": own and own_odd,
-                             "YZ": own and not own_odd, "X": own_odd,
-                             "Y": own != own_odd, "Z": own}[measurement.label]
-                    focused = all(
-                        v not in odd if m.label in ("XY", "X") else
-                        v not in s if m.label in ("XZ", "YZ", "Z") else
-                        (v in s) == (v in odd)
-                        for v, m in measurements.items() if v != u)
-                    if local and focused:
-                        candidates[u].append({v for v, m in measurements.items()
-                                              if v != u and len(m.label) == 2 and v in s | odd})
-            remaining = set(measurements)
-            while remaining:
-                ready = {u for u in remaining if any(not (deps & remaining) for deps in candidates[u])}
-                if not ready:
-                    break
-                remaining -= ready
-            flow = pattern.find_flow()
-            with self.subTest(case=case):
-                self.assertEqual(flow is not None, not remaining)
-                if flow is not None:
-                    result = extract_pauli(pattern, flow=flow)
-                    self.assert_same(pattern_matrix(pattern), result.to_matrix())
-                    self.assert_same(pattern_matrix(pattern), result.to_circuit().to_matrix())
-                    positives += 1
-                else:
-                    negatives += 1
-        self.assertGreater(positives, 20)
-        self.assertGreater(negatives, 20)
-
     def test_isometry_tableau_specifies_logical_action_and_output_subspace(self):
         # A signed Bell state has no input images; the stabilizers are essential.
         bell = CliffordMap((), (), (PauliString(2, 3, 0, -1), PauliString(2, 0, 3)))
@@ -293,6 +164,28 @@ class TestPauliExtract(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(PauliExtractionError):
                 CliffordMap(*bad)
 
+    def test_isometry_qasm_export_preserves_preparation_and_rotations(self):
+        # A graph with an X root and an XY leaf implements a YZ effect.
+        graph = open_graph((0, 0, 0, Fraction(1, 3)), ((0, 1), (1, 2), (1, 3)), (0,), (0, 2))
+        result = extract_pauli(graph)
+        plus = np.array([[1], [1]]) / np.sqrt(2)
+        phases = np.diag(np.exp(-1j * np.pi / 6 * np.array([1, -1, -1, 1])))
+        expected = phases @ np.kron(np.eye(2), plus)
+        self.assert_same(expected, graph.to_matrix())
+        self.assert_same(expected, result.to_matrix())
+        self.assert_same(expected, result.to_circuit().to_matrix())
+        self.assertEqual([(str(r.pauli), r.angle) for r in result.rotations],
+                         [("+ZZ", Fraction(1, 3))])
+        for version in (2, 3):
+            with self.subTest(version=version):
+                imported = Circuit.from_qasm(result.to_circuit().to_qasm(version))
+                self.assertEqual(imported.qubits, 2)
+                self.assertEqual([g.target for g in imported.gates if isinstance(g, Reset)], [1])
+                # Fix the extra input to zero and simplify its leading reset.
+                imported.initialize_qubits([False, True])
+                graph = imported.to_graph(elide_initial_resets=True)
+                self.assert_same(expected, graph.to_matrix())
+
     def test_unbalanced_supplied_witness_and_large_packed_stabilizers(self):
         graph = Graph()
         inp = graph.add_vertex(VertexType.BOUNDARY)
@@ -304,14 +197,13 @@ class TestPauliExtract(unittest.TestCase):
         graph.set_inputs((inp,))
         graph.set_outputs((state_out, out))
         flow = pauli_flow(graph)
-        with patch("pyzx.pauli_extract.pauli_flow", side_effect=AssertionError("another solve")), \
-             patch.object(PauliPattern, "find_flow", side_effect=AssertionError("another solve")):
+        with patch("pyzx.pauli_extract.pauli_flow", side_effect=AssertionError("another solve")):
             result = extract_pauli(graph, flow=flow)
         self.assert_same(graph.to_matrix(), result.to_matrix())
         self.assert_same(graph.to_matrix(), result.to_circuit().to_matrix())
         vertices = tuple(range(70))
-        pattern = PauliPattern(vertices, (), (0,), tuple(reversed(vertices)), {})
-        result = extract_pauli(pattern)
+        graph = open_graph((0,) * 70, (), (0,), tuple(reversed(vertices)))
+        result = extract_pauli(graph)
         self.assertEqual(len(result.clifford.stabilizers), 69)
         self.assertEqual(result.clifford.x_images[0], PauliString(70, 1 << 69, 0))
         self.assertEqual(result.to_circuit().qubits, 1)
@@ -391,10 +283,13 @@ class TestPauliExtract(unittest.TestCase):
         graph = circuit.to_graph()
         simplify.to_graph_like(graph)
         flow = pauli_flow(graph)
+        with patch("pyzx.pauli_extract.pauli_flow", wraps=pauli_flow) as finder:
+            found_inside = extract_circuit_pauli(graph, flow=None)
+        finder.assert_called_once_with(graph)
         with patch("pyzx.pauli_extract.pauli_flow", side_effect=AssertionError("another flow solve")), \
-             patch.object(PauliPattern, "find_flow", side_effect=AssertionError("another flow solve")), \
              patch("pyzx.pauli_extract.np.eye", side_effect=AssertionError("dense arithmetic")):
             actual = extract_circuit_pauli(graph, flow=flow)
+        self.assertEqual(actual, found_inside)
         self.assertIsInstance(actual, zx.PauliCircuit)
         self.assert_same(circuit.to_matrix(), actual.to_matrix())
         self.assert_same(circuit.to_matrix(), actual.to_circuit().to_matrix())
@@ -424,22 +319,20 @@ class TestPauliExtract(unittest.TestCase):
             graph, flow=pauli_flow(graph)).to_circuit().to_matrix())
 
     def test_large_packed_boundaries_without_dense_conversion(self):
-        vertices = tuple(17 + 3 * i for i in range(70))
-        pattern = PauliPattern(vertices, (), vertices, tuple(reversed(vertices)), {})
-        result = extract_pauli(pattern)
+        graph = open_graph((0,) * 70, (), tuple(range(70)), tuple(reversed(range(70))))
+        result = extract_pauli(graph)
         self.assertEqual(result.clifford.x_images[0], PauliString(70, 1 << 69, 0))
         self.assertEqual(result.clifford.z_images[69], PauliString(70, 0, 1))
         self.assertEqual(result.to_circuit().qubits, 70)
         with self.assertRaisesRegex(ValueError, "dense verification"):
             result.to_matrix()
 
-    def test_long_path_and_empty_pattern(self):
-        pattern = PauliPattern(tuple(range(130)), tuple((v, v + 1) for v in range(129)),
-                               (0,), (129,), {v: Measurement("X") for v in range(129)})
+    def test_long_path_and_empty_graph(self):
+        graph = open_graph((0,) * 130, tuple((v, v + 1) for v in range(129)), (0,), (129,))
         circuit = Circuit(1)
         circuit.add_gate("HAD", 0)
-        self.assert_same(circuit.to_matrix(), extract_circuit_pauli(pattern).to_circuit().to_matrix())
-        empty = extract_pauli(PauliPattern((), (), (), (), {}))
+        self.assert_same(circuit.to_matrix(), extract_circuit_pauli(graph).to_circuit().to_matrix())
+        empty = extract_pauli(Graph())
         np.testing.assert_array_equal(empty.to_matrix(), [[1]])
         self.assertEqual(empty.to_circuit().qubits, 0)
         self.assertEqual(empty.to_circuit().gates, [])
@@ -467,15 +360,15 @@ class TestPauliExtract(unittest.TestCase):
                 return
         self.fail("no Pauli-only example found")
 
-    def test_corrupted_witnesses_are_rejected(self):
-        pattern = PauliPattern((0, 1), ((0, 1),), (0,), (1,), {0: Measurement("XY", Fraction(1, 3))})
-        flow = pattern.find_flow()
+    def test_structurally_invalid_witnesses_are_rejected(self):
+        graph = open_graph((Fraction(1, 3), 0), ((0, 1),), (0,), (1,))
+        flow = pauli_flow(graph)
         assert flow is not None
         for bad in ((flow[0], {0: set()}), (flow[0], {0: {0}}),
                     ({0: 1, 1: 0}, flow[1]), ({0: 0}, flow[1]),
                     ({0: False, 1: 1}, flow[1])):
             with self.assertRaises(PauliExtractionError):
-                extract_pauli(pattern, flow=bad)
+                extract_pauli(graph, flow=bad)
 
     def test_domain_errors_and_exact_angles(self):
         tiny = Fraction(1, 2**60)
@@ -484,15 +377,11 @@ class TestPauliExtract(unittest.TestCase):
         graph = circuit.to_graph()
         simplify.to_graph_like(graph)
         self.assertTrue(any(r.angle in (tiny, 2 - tiny) for r in extract_pauli(graph).rotations))
-        no_flow = PauliPattern((0, 1), (), (0,), (1,), {0: Measurement("XY")})
+        no_flow = open_graph((0, 0), (), (0,), (1,))
         with self.assertRaisesRegex(PauliExtractionError, "no Pauli flow"):
             extract_pauli(no_flow)
         with self.assertRaisesRegex(PauliExtractionError, "at least as many outputs"):
-            extract_pauli(PauliPattern((0, 1), (), (0, 1), (1,), {0: Measurement("X")}))
-        with self.assertRaisesRegex(PauliExtractionError, "axis measurement"):
-            Measurement("Z", Fraction(1, 4))
-        with self.assertRaisesRegex(PauliExtractionError, "unknown measurement"):
-            Measurement("ZX")
+            extract_pauli(open_graph((0, 0), (), (0, 1), (1,)))
         with self.assertRaisesRegex(PauliExtractionError, "commutation"):
             CliffordMap((PauliString(1, 1, 0),), (PauliString(1, 1, 0),))
         graph = circuit.to_graph()
@@ -506,16 +395,10 @@ class TestPauliExtract(unittest.TestCase):
         with self.assertRaisesRegex(PauliExtractionError, "grounds"):
             extract_pauli(graph)
 
-    def test_validation_and_snapshotting(self):
-        measurements = {0: Measurement("XY")}
-        pattern = PauliPattern((0, 1), ((0, 1),), (0,), (1,), measurements)
-        measurements.clear()
-        self.assertIn(0, pattern.measurements)
-        for kwargs in ({"vertices": (0, 0)}, {"edges": ((0, 0),)},
-                       {"edges": ((0, 1), (1, 0))}, {"inputs": (0, 0)},
-                       {"output_hadamards": (1,)}, {"output_phases": (Fraction(0), Fraction(0))}):
-            with self.assertRaises(PauliExtractionError):
-                replace(pattern, **kwargs)
+    def test_input_spiders_must_be_distinct(self):
+        graph = open_graph((0, 0), (), (0, 0), (0, 1))
+        with self.assertRaisesRegex(PauliExtractionError, "inputs must be distinct"):
+            extract_pauli(graph)
 
 
 if __name__ == "__main__":

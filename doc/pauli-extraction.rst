@@ -1,7 +1,8 @@
 Pauli-flow circuit extraction
 =============================
 
-``pyzx.extract_pauli`` implements the construction in Will Simmons,
+``pyzx.extract_pauli`` follows the decomposition into a Clifford isometry
+and Pauli rotations in Will Simmons,
 `Relating Measurement Patterns to Circuits via Pauli Flow
 <https://doi.org/10.4204/EPTCS.343.4>`_ (2021), Lemma C.2 and Theorem C.12.
 It returns a :class:`~pyzx.pauli_extract.PauliCircuit` containing a Clifford
@@ -36,7 +37,9 @@ A measured Z-spider with phase ``a`` represents an XY measurement at angle
 ``-a`` in Simmons's conventions. Exact Clifford angles are interpreted as
 signed X/Y measurements by default. This agrees with the labels used by
 :func:`pyzx.flow.pauli_flow`; rational angles are never rounded. Use
-``infer_pauli=False`` to retain the XY planes and use gflow instead.
+``infer_pauli=False`` to keep all measured spiders as XY and use gflow instead.
+The extractor takes a ZX diagram. Other measurement planes can appear in
+the diagram through ZX encodings such as phase gadgets.
 
 Reusing a flow witness
 ----------------------
@@ -50,15 +53,19 @@ Reusing a flow witness
         raise ValueError("No Pauli flow")
     result = zx.extract_pauli(g, flow=flow)
 
-``flow`` is the normal forward ``(layers, corrections)`` pair, with correction
-sets. It must be focused and refer to the same graph and measurement labels.
-The extractor verifies its domain, input exclusion, local Pauli conditions,
-focusing and layer order, without invoking flow finding again. Reversed flows
-and results obtained with ``layers_only=True`` are not extraction witnesses.
-For a gflow witness, also pass ``infer_pauli=False``.
+A supplied ``flow`` is assumed to be a valid, focused, forward
+``(layers, corrections)`` witness with correction sets for the same graph and measurement labels. The
+extractor checks its structure and reuses the witness. The caller is responsible for the Pauli-flow conditions,
+including focusing and precedence. Reversed flows and results obtained with
+``layers_only=True`` are not extraction witnesses.
 
-Intermediate representation and explicit labels
------------------------------------------------
+With ``flow=None`` (the default), the extractor calls
+:func:`pyzx.flow.pauli_flow`. With ``infer_pauli=False`` it calls
+:func:`pyzx.flow.gflow` instead. Also pass ``infer_pauli=False`` when supplying
+a gflow witness.
+
+Intermediate representation
+---------------------------
 
 .. code-block:: python
 
@@ -78,6 +85,10 @@ has no logical images and is specified entirely by its output stabilizers.
 
 Each :class:`~pyzx.pauli_extract.PauliExponential` represents
 ``exp(-i*pi*angle*P/2)``, where ``P`` is a signed Hermitian Pauli tensor.
+Simmons uses a positive imaginary exponent for XY measurements, so the
+extractor negates the XY measurement angle before reducing it modulo two.
+The Pauli retains the sign of the primary extraction string.
+
 Apply the Clifford first, followed by rotations in tuple order. Rotations
 retain their source vertex. ``flow_layers`` is stored output-first, with
 outputs in its first tuple, independently of the numbering in the supplied
@@ -102,56 +113,38 @@ It does not optimize across exponentials. Retain ``result.clifford`` and
 ``result.rotations`` to pass the structured computation to a joint Pauli
 synthesizer instead.
 
-Explicit measurement labels
-----------------------------
-
-:class:`~pyzx.pauli_extract.PauliPattern` can describe an explicit labelled
-open graph with XY, XZ, YZ, X, Y and Z measurements. Unlike a ZX graph, its
-inputs and outputs are qubit vertices, and may overlap. For example:
-
-.. code-block:: python
-
-    from fractions import Fraction
-    from pyzx.pauli_extract import Measurement, PauliPattern
-
-    pattern = PauliPattern(
-        vertices=(0, 1), edges=((0, 1),), inputs=(0,), outputs=(1,),
-        measurements={0: Measurement("XY", Fraction(1, 3))},
-    )
-    flow = pattern.find_flow()
-    result = zx.extract_pauli(pattern, flow=flow)
-
-``Measurement`` follows Simmons's positive-outcome ket conventions:
-XY uses ``(|0> + exp(i*pi*a)|1>)/sqrt(2)``, XZ uses
-``cos(pi*a/2)|0> + sin(pi*a/2)|1>``, and YZ replaces the sine term by
-``i*sin(pi*a/2)|1>``. Axis labels use angle 0 or 1 for the positive or
-negative eigenstate. All angles are rational multiples of pi.
-
-For explicit patterns, ``find_flow()`` uses the published Mitosek--Backens
-M/N equations (DOI `10.1088/1751-8121/ae2999
-<https://doi.org/10.1088/1751-8121/ae2999>`_). Equal input/output counts make
-M square: invert M over GF(2), then check that NC is acyclic. With extra
-outputs, XZ/YZ/Z labels are reduced to Pauli roots with measurement leaves:
-XZ uses a Y root and an XY leaf, YZ uses an X root and an XY leaf, and Z
-uses an X root and an X leaf. The existing cubic finder then supplies a
-focused witness, which is restricted back to the original vertices.
-This helper does not change the public graph-based flow finders' label support.
+``circuit.to_qasm(version=2)`` and ``circuit.to_qasm(version=3)`` declare
+the full output register and prepare each added wire with a reset followed
+by a Hadamard. The first ``n_inputs`` wires carry the original inputs.
 
 Implementation
 --------------
 
-Pauli supports and stabilizer incidence columns are packed into Python
-integers. The output rotations use the focused correction sets. The
-Clifford remainder is reconstructed by projecting a Choi stabilizer tableau
-after removing the planar rotations. Incidence columns locate affected rows,
-avoiding a scan of every row at each measurement. Its input-reference block
-is then reduced to recover the logical Clifford-generator images. The remaining
-rows give the free output stabilizers of the isometry. This avoids another
-flow solve on an input-extended graph. Shared output spiders are separated
-internally, and a supplied witness is extended without another flow solve.
+The Pauli rotations use the extraction strings derived from a focused Pauli
+flow in Lemma C.2. In the proof of Theorem C.12, Simmons obtains the logical
+Pauli images from extraction strings, using input extensions for the X
+images. The free output stabilizers come from focused sets.
 
-The packed extraction core and the explicit-pattern flow helper use :math:`O(N^3)` bit work
-and :math:`O(N^2)` stored bits, in addition to the output and exact-angle arithmetic.
+This implementation reconstructs the residual Clifford isometry by projecting
+a Choi stabilizer tableau. It sets the XY measurement angles to zero and
+keeps the signed Pauli measurements. Elimination on the input-reference
+columns yields the logical X and Z images, and the remaining rows give the
+free output stabilizers. This computes the tableau without a flow solve on
+an input-extended graph.
+
+Pauli supports and stabilizer incidence columns are packed into Python
+integers. The incidence columns locate the rows affected by each measurement.
+Shared output spiders are separated internally, and a supplied witness is
+extended to account for the added vertices.
+
+Focused flow determines the measured part of :math:`\operatorname{Odd}(p(v))` as
+:math:`\{v\} \mathbin{\triangle} (p(v) \cap Y_{\rm meas})`, where
+:math:`Y_{\rm meas}` is the set of Y-measured vertices. The extractor computes
+the output part by XORing packed output-neighbour masks in the same pass
+that counts edges induced by :math:`p(v)` for the rotation sign.
+
+The packed extraction core uses :math:`O(N^3)` bit work and :math:`O(N^2)`
+stored bits, in addition to the output and exact-angle arithmetic.
 Optional gate synthesis is a separate step: symplectic elimination produces the
 Clifford gates, and local basis changes and CNOT ladders produce the Pauli
 rotations. There is no claim that this strategy reduces gate count or is
