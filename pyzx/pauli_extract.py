@@ -24,8 +24,8 @@ from typing import Any, Literal
 
 import numpy as np
 
-from .circuit import Circuit
-from .circuit.gates import InitAncilla, ParityPhase
+from .circuit import Circuit, PauliExponential
+from .circuit.gates import InitAncilla
 from .flow import gflow, pauli_flow
 from .graph.base import BaseGraph
 from .symbolic import Poly
@@ -365,27 +365,17 @@ class CliffordMap:
         return np.column_stack(columns)
 
 
-@dataclass(frozen=True, slots=True)
-class PauliExponential:
-    """exp(-i*pi*angle*pauli/2), with angle in multiples of pi."""
-
-    pauli: PauliString
-    angle: Fraction
-    vertex: int | None = None
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "angle", _phase(self.angle))
-
-
 @dataclass(frozen=True)
 class PauliCircuit:
     """An extracted Clifford map and ordered Pauli exponentials.
 
     Apply ``clifford`` first, then ``rotations`` in tuple/time order. Extraction
     preserves this representation without constructing elementary gates.
-    ``flow_layers`` retains the witness's output-first partial order, and each
-    rotation retains its source vertex for tracing. Call ``to_circuit()``
-    explicitly for a basic gate decomposition. Extra output wires are
+    ``rotations`` contains :class:`~pyzx.circuit.PauliExponential` gates.
+    ``rotation_vertices`` records their source vertices, with ``None`` for
+    output-phase rotations. ``flow_layers`` retains the witness's output-first
+    partial order. Call ``to_circuit()`` explicitly for a basic gate
+    decomposition. Extra output wires are
     prepared in ket plus; no wires beyond the output register are added.
     """
 
@@ -394,13 +384,18 @@ class PauliCircuit:
     inputs: tuple[int, ...] = ()
     outputs: tuple[int, ...] = ()
     flow_layers: tuple[tuple[int, ...], ...] = ()
+    rotation_vertices: tuple[int | None, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "rotations", tuple(self.rotations))
         object.__setattr__(self, "inputs", tuple(self.inputs))
         object.__setattr__(self, "outputs", tuple(self.outputs))
         object.__setattr__(self, "flow_layers", tuple(tuple(layer) for layer in self.flow_layers))
-        if any(r.pauli.n_qubits != self.n_qubits for r in self.rotations):
+        object.__setattr__(self, "rotation_vertices",
+                           tuple(self.rotation_vertices) or (None,) * len(self.rotations))
+        if len(self.rotation_vertices) != len(self.rotations):
+            raise ValueError("rotation vertices must align with rotations")
+        if any(len(r.pauli) - 1 != self.n_qubits for r in self.rotations):
             raise ValueError("rotation and Clifford register sizes differ")
 
     @property
@@ -424,17 +419,15 @@ class PauliCircuit:
         """
         circuit = self.clifford.to_circuit()
         for rotation in self.rotations:
-            _append_rotation(circuit, rotation)
+            circuit.gates.extend(rotation.to_basic_gates())
         return circuit
 
     def to_matrix(self, *, max_qubits: int = 8) -> np.ndarray:
         result = self.clifford.to_matrix(max_qubits=max_qubits)
         for rotation in self.rotations:
-            theta = (np.pi * float(rotation.angle)) / 2
-            result = np.cos(theta) * result - 1j * np.sin(theta) * (
-                rotation.pauli.to_matrix(max_qubits=max_qubits) @ result
-            )
+            result = rotation.to_graph().to_matrix() @ result
         return result
+
 
 def _multiply(a: _Row, b: _Row) -> _Row:
     """Multiply commuting Hermitian packed rows (x,z,negative), exactly."""
@@ -620,7 +613,9 @@ def extract_pauli(
         for v, m in pattern.measurements.items()
         if m.label != "XY" and m.angle == 1
     )
+    h_mask = sum(1 << q for q in pattern.output_hadamards)
     rotations = []
+    rotation_vertices = []
     for layer in reversed(layers[1:]):
         for v in layer:
             measurement = pattern.measurements[v]
@@ -639,23 +634,25 @@ def extract_pauli(
             negatives = ((s | measured_odd) & negative_axes).bit_count()
             negative = (edge_count + y_count // 2 + negatives) & 1
             pauli = PauliString(len(pattern.outputs), x, z, -1 if negative else 1)
-            rotations.append(PauliExponential(pauli, -measurement.angle, v))
+            rotations.append(PauliExponential(
+                str(_hadamard(pauli, h_mask)), _phase(-measurement.angle)
+            ))
+            rotation_vertices.append(v)
     clifford = _residual_clifford(pattern, positions, adjacency)
     xs, zs = list(clifford.x_images), list(clifford.z_images)
     for q in pattern.input_hadamards:
         xs[q], zs[q] = zs[q], xs[q]
-    h_mask = sum(1 << q for q in pattern.output_hadamards)
     clifford = CliffordMap(
         tuple(_hadamard(p, h_mask) for p in xs), tuple(_hadamard(p, h_mask) for p in zs),
         tuple(_hadamard(p, h_mask) for p in clifford.stabilizers),
     )
-    rotations = [PauliExponential(_hadamard(r.pauli, h_mask), r.angle, r.vertex) for r in rotations]
     for q, angle in enumerate(pattern.output_phases):
         if angle != 0:
-            rotations.append(
-                PauliExponential(_hadamard(PauliString(len(pattern.outputs), 0, 1 << q), h_mask), angle)
-            )
-    return PauliCircuit(clifford, tuple(rotations), pattern.inputs, pattern.outputs, layers)
+            pauli = _hadamard(PauliString(len(pattern.outputs), 0, 1 << q), h_mask)
+            rotations.append(PauliExponential(str(pauli), angle))
+            rotation_vertices.append(None)
+    return PauliCircuit(clifford, tuple(rotations), pattern.inputs, pattern.outputs, layers,
+                        tuple(rotation_vertices))
 
 
 def extract_circuit_pauli(
@@ -797,20 +794,3 @@ def _synthesise_clifford(clifford: CliffordMap) -> Circuit:
         if rows[n + q][2]:
             apply("NOT", q)
     return reduction.adjoint()
-
-
-def _append_rotation(circuit: Circuit, rotation: PauliExponential) -> None:
-    """Change local bases, compute parity, rotate, then uncompute."""
-    pauli = rotation.pauli
-    targets = list(_bits(pauli.x | pauli.z))
-    if not targets or rotation.angle == 0:
-        return  # A rotation about the identity contributes only a global phase.
-    basis = Circuit(circuit.qubits)
-    for q in targets:
-        if pauli.x & (1 << q):
-            if pauli.z & (1 << q):
-                basis.add_gate("S", q, adjoint=True)
-            basis.add_gate("HAD", q)
-    circuit.add_circuit(basis)
-    circuit.gates.extend(ParityPhase(rotation.angle * pauli.sign, *targets).to_basic_gates())
-    circuit.add_circuit(basis.adjoint())

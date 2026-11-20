@@ -83,14 +83,20 @@ without choosing a unitary completion. ``n_inputs`` and ``n_outputs`` give its
 dimensions; ``n_qubits`` denotes the output register size. A state preparation
 has no logical images and is specified entirely by its output stabilizers.
 
-Each :class:`~pyzx.pauli_extract.PauliExponential` represents
-``exp(-i*pi*angle*P/2)``, where ``P`` is a signed Hermitian Pauli tensor.
+Each rotation is a :class:`~pyzx.circuit.PauliExponential` gate representing
+``exp(-i*pi*angle*P/2)``. Its ``pauli`` attribute is a signed string of
+``I``, ``X``, ``Y`` and ``Z``, with wire zero leftmost, and ``angle`` is in
+units of pi. Extracted gates use the default ``gadget_phase=False`` convention.
+They can be added directly to an ordinary :class:`~pyzx.circuit.Circuit`.
 Simmons uses a positive imaginary exponent for XY measurements, so the
 extractor negates the XY measurement angle before reducing it modulo two.
 The Pauli retains the sign of the primary extraction string.
 
-Apply the Clifford first, followed by rotations in tuple order. Rotations
-retain their source vertex. ``flow_layers`` is stored output-first, with
+Apply the Clifford first, followed by rotations in tuple order.
+``rotation_vertices`` is an aligned tuple of source vertices, with ``None``
+for rotations from output phases. For example, iterate over
+``zip(result.rotations, result.rotation_vertices)`` to trace each gate.
+``flow_layers`` is stored output-first, with
 outputs in its first tuple, independently of the numbering in the supplied
 PyZX witness. The capped ``to_matrix()`` methods are verification helpers;
 extraction and gate synthesis do not construct dense matrices.
@@ -102,8 +108,9 @@ Optional elementary-gate conversion
 
     circuit = result.to_circuit()
 
-This explicit reference conversion synthesises the Clifford map and each
-Pauli exponential independently, using local basis changes and CNOT ladders.
+This explicit reference conversion synthesises the Clifford map and calls
+``to_basic_gates()`` on each Pauli exponential, using local basis changes and
+CNOT ladders.
 For an isometry, it first completes the tableau to a Clifford unitary, with
 the extra X images given by the output stabilizers. Extra wires are prepared
 in :math:`|+\rangle` using :class:`~pyzx.circuit.gates.InitAncilla` gates.
@@ -133,7 +140,9 @@ free output stabilizers. This computes the tableau without a flow solve on
 an input-extended graph.
 
 Pauli supports and stabilizer incidence columns are packed into Python
-integers. The incidence columns locate the rows affected by each measurement.
+integers during extraction. The output rotation supports are converted to
+signed strings when constructing the gates. The incidence columns locate
+the rows affected by each measurement.
 Shared output spiders are separated internally, and a supplied witness is
 extended to account for the added vertices.
 

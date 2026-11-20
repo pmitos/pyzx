@@ -26,13 +26,13 @@ from ..utils import EdgeType
 from .gates import (CCZ, CHAD, CNOT, CRX, CRY, CRZ, CSWAP, CSX, CU, CU3, CY,
                     CZ, HAD, NOT, RXX, RZZ, SWAP, SX, U2, U3, XCX,
                     ConditionalGate, CPhase, FSim, Gate, InitAncilla, Measurement,
-                    ParityPhase, PhaseGadget, S, T, Tofolli, XPhase, Y, YPhase,
+                    ParityPhase, PauliExponential, PhaseGadget, S, T, Tofolli, XPhase, Y, YPhase,
                     Z, ZPhase, gate_types)
 
 __all__ = [
     'Gate', 'gate_types', 'NOT', 'Y', 'Z', 'HAD', 'XPhase', 'YPhase', 'ZPhase', 'U2', 'U3', 'S', 'T', 'SX', 'SWAP', 'RXX', 'RZZ', 'CNOT',
     'CY', 'CZ', 'CHAD', 'CSX', 'XCX', 'CRX', 'CRY', 'CRZ', 'CPhase', 'CU3', 'CU', 'CSWAP', 'Tofolli', 'CCZ', 'ParityPhase', 'FSim',
-    'Measurement', 'PhaseGadget', 'ConditionalGate',
+    'Measurement', 'PauliExponential', 'PhaseGadget', 'ConditionalGate',
     
     'Circuit', 'CircuitLike', 'id'
 ]
@@ -228,12 +228,15 @@ class Circuit:
         c.gates.extend([g.reposition(mask, bit_mask) for g in other.gates])
         return c
 
-    def to_basic_gates(self) -> 'Circuit':
+    def to_basic_gates(self, preserve_gadgets: bool = False) -> 'Circuit':
         """Returns a new circuit with every gate expanded in terms of X/Z phases, Hadamards
         and the 2-qubit gates CNOT, CZ, CX."""
         c = Circuit(self.qubits, name=self.name, bit_amount=self.bits)
         for g in self.gates:
-            c.gates.extend(g.to_basic_gates())
+            if preserve_gadgets and getattr(g, "as_gadget", False):
+                c.gates.append(g.copy())
+            else:
+                c.gates.extend(g.to_basic_gates())
         return c
 
     def split_phase_gates(self) -> 'Circuit':
@@ -321,7 +324,7 @@ class Circuit:
         from .graphparser import circuit_to_graph
 
         return circuit_to_graph(
-            self if zh else self.to_basic_gates(),
+            self if zh else self.to_basic_gates(preserve_gadgets=True),
             compress_rows,
             backend,
             initialize_qubits=self._initialize_qubits,
@@ -447,7 +450,9 @@ class Circuit:
         """Produces a Quipper ASCII description of the circuit."""
         s = "Inputs: " + ", ".join("{!s}:Qbit".format(i) for i in range(self.qubits)) + "\n"
         for g in self.gates:
-            s += g.to_quipper() + "\n"
+            text = g.to_quipper()
+            if text:
+                s += text + "\n"
         s += "Outputs: " + ", ".join("{!s}:Qbit".format(i) for i in range(self.qubits))
         return s
 

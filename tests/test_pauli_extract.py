@@ -11,11 +11,12 @@ import numpy as np
 import pyzx as zx
 
 from pyzx import Circuit, Graph, simplify
+from pyzx.circuit import PauliExponential
 from pyzx.circuit.gates import InitAncilla, Reset
 from pyzx.flow import gflow, pauli_flow
 from pyzx.graph.base import BaseGraph
 from pyzx.pauli_extract import (
-    CliffordMap, PauliExtractionError, PauliString,
+    CliffordMap, PauliCircuit, PauliExtractionError, PauliString,
     extract_circuit_pauli, extract_pauli,
 )
 from pyzx.symbolic import new_var
@@ -176,6 +177,7 @@ class TestPauliExtract(unittest.TestCase):
         self.assert_same(expected, result.to_circuit().to_matrix())
         self.assertEqual([(str(r.pauli), r.angle) for r in result.rotations],
                          [("+ZZ", Fraction(1, 3))])
+        self.assertEqual(result.rotation_vertices, (3,))
         for version in (2, 3):
             with self.subTest(version=version):
                 imported = Circuit.from_qasm(result.to_circuit().to_qasm(version))
@@ -263,17 +265,57 @@ class TestPauliExtract(unittest.TestCase):
                                       side_effect=AssertionError("implicit gate synthesis")), \
                          patch.object(CliffordMap, "to_circuit",
                                       side_effect=AssertionError("implicit Clifford synthesis")), \
+                         patch.object(PauliExponential, "to_basic_gates",
+                                      side_effect=AssertionError("implicit rotation synthesis")), \
                          patch("pyzx.pauli_extract.np.eye",
                                side_effect=AssertionError("dense arithmetic")):
                         result = extractor(graph, flow=flow)
                     self.assertIsInstance(result, zx.PauliCircuit)
                     self.assertTrue(result.rotations)
+                    self.assertTrue(all(type(r) is PauliExponential for r in result.rotations))
+                    self.assertTrue(all(isinstance(r.pauli, str) and len(r.pauli) == 3
+                                        and not r.gadget_phase for r in result.rotations))
+                    self.assertEqual(len(result.rotation_vertices), len(result.rotations))
+                    self.assertTrue(all(v is None or v in witness[1]
+                                        for v in result.rotation_vertices))
                     self.assertTrue(any(r.angle.denominator == 7 for r in result.rotations))
                     self.assert_same(circuit.to_matrix(), result.to_matrix())
+                    structured = result.clifford.to_circuit()
+                    structured.gates.extend(result.rotations)
+                    self.assert_same(circuit.to_matrix(), structured.to_matrix())
                     gates = result.to_circuit()
                     self.assertIsInstance(gates, Circuit)
+                    self.assertFalse(any(isinstance(g, PauliExponential) for g in gates.gates))
                     self.assert_same(circuit.to_matrix(), gates.to_matrix())
                     self.assertEqual(graph.to_json(), original)
+
+    def test_pauli_circuit_uses_gate_phase_conventions(self):
+        clifford = CliffordMap(
+            tuple(PauliString(4, 1 << q, 0) for q in range(4)),
+            tuple(PauliString(4, 0, 1 << q) for q in range(4)),
+        )
+        signed_paulis = (PauliString(4, 5, 12, -1), PauliString(4, 0, 0))
+        angles = (Fraction(9, 4), Fraction(-1, 3))
+        for gadget_phase in (False, True):
+            with self.subTest(gadget_phase=gadget_phase):
+                rotations = tuple(PauliExponential(str(p), a, gadget_phase=gadget_phase)
+                                  for p, a in zip(signed_paulis, angles))
+                result = PauliCircuit(clifford, rotations)
+                expected = np.eye(16, dtype=complex)
+                for pauli, angle in zip(signed_paulis, angles):
+                    theta = np.pi * float(angle) / 2
+                    expected = np.cos(theta) * expected - 1j * np.sin(theta) * pauli.to_matrix() @ expected
+                    if gadget_phase:
+                        expected *= np.exp(1j * theta * pauli.sign)
+                np.testing.assert_allclose(result.to_matrix(), expected, atol=1e-12)
+                self.assert_same(expected, result.to_circuit().to_matrix())
+                self.assertEqual(result.rotation_vertices, (None, None))
+                with self.assertRaisesRegex(ValueError, "max_qubits"):
+                    result.to_matrix(max_qubits=3)
+        with self.assertRaisesRegex(ValueError, "register sizes"):
+            PauliCircuit(clifford, (PauliExponential("X", Fraction(1, 3)),))
+        with self.assertRaisesRegex(ValueError, "vertices must align"):
+            PauliCircuit(clifford, rotations, rotation_vertices=(0,))
 
     def test_supplied_public_witness_is_reused_without_dense_arithmetic(self):
         circuit = Circuit(2)
@@ -326,6 +368,13 @@ class TestPauliExtract(unittest.TestCase):
         self.assertEqual(result.to_circuit().qubits, 70)
         with self.assertRaisesRegex(ValueError, "dense verification"):
             result.to_matrix()
+        graph.set_phase(0, Fraction(1, 7))
+        boundary = graph.outputs()[-1]
+        graph.set_edge_type(graph.edge(0, boundary), EdgeType.HADAMARD)
+        result = extract_pauli(graph)
+        self.assertEqual(result.rotations,
+                         (PauliExponential("I" * 69 + "X", Fraction(1, 7)),))
+        self.assertEqual(result.rotation_vertices, (None,))
 
     def test_long_path_and_empty_graph(self):
         graph = open_graph((0,) * 130, tuple((v, v + 1) for v in range(129)), (0,), (129,))
