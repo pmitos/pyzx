@@ -980,15 +980,17 @@ class PauliExponential(Gate):
     as_gadget = True
 
     def __init__(self, pauli: Sequence[str], angle: FractionLike, *targets: int) -> None:
-        if not targets or any(not isinstance(target, int) or target < 0 for target in targets):
-            raise ValueError("expected one or more nonnegative integer targets")
+        if not targets:
+            raise ValueError("PauliExponential requires at least one target qubit.")
+        if any(not isinstance(target, int) or target < 0 for target in targets):
+            raise ValueError("PauliExponential target qubits must be nonnegative integers.")
         if len(set(targets)) != len(targets):
-            raise ValueError("targets must be distinct")
+            raise ValueError("PauliExponential target qubits must be distinct.")
         if len(pauli) != len(targets) or any(axis not in ("X", "Y", "Z") for axis in pauli):
-            raise ValueError("pauli must contain one X, Y, or Z per target")
+            raise ValueError("PauliExponential requires one X, Y, or Z per target.")
         angle = normalize_phase(angle)
         if not isinstance(angle, (int, Fraction, Poly)):
-            raise TypeError("angle must be an integer, Fraction, or symbolic phase")
+            raise TypeError("PauliExponential angle must be an integer, Fraction, or symbolic phase.")
         assert_phase_real(angle)
         self.pauli = "".join(pauli)
         self.angle = angle
@@ -1014,7 +1016,7 @@ class PauliExponential(Gate):
     def reposition(self, mask: list[int], bit_mask: list[int] | None = None) -> 'PauliExponential':
         targets = tuple(mask[target] for target in self.targets)
         if min(targets) < 0 or len(set(targets)) != len(targets):
-            raise ValueError("Pauli exponential targets must map to distinct, nonnegative indices")
+            raise ValueError("PauliExponential target qubits must map to distinct, nonnegative indices.")
         gate = self.copy()
         gate.targets = targets
         return gate
