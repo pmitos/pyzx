@@ -962,15 +962,13 @@ class PhaseGadget(ParityPhase):
 class PauliExponential(Gate):
     r"""The unitary :math:`\exp(-i\pi a P/2)` for a product of Pauli operators.
 
-    ``pauli`` gives one ``X``, ``Y``, or ``Z`` per target, in the order
+    ``pauli`` specifies one ``X``, ``Y``, or ``Z`` per target, in the order
     given by ``targets``. It can be a string or a sequence of single letters.
-    Pass at least one target as a positional argument, as for
-    :class:`PhaseGadget`. Targets must be distinct and nonnegative.
+    Targets must be distinct and nonnegative.
     ``angle`` is :math:`a`, in multiples of :math:`\pi`, and may be
-    symbolic. Negate the angle to exponentiate the negative of the Pauli
-    product.
+    symbolic.
 
-    For an all-``Z`` product, :class:`ParityPhase` and :class:`PhaseGadget`
+    For an all ``Z`` product, :class:`ParityPhase` and :class:`PhaseGadget`
     include an additional scalar :math:`\exp(i\pi a/2)`. Basic gate
     decomposition and text export agree with the exponential up to global
     phase. Text export requires a bound angle.
