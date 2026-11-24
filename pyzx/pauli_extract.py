@@ -395,8 +395,8 @@ class PauliCircuit:
                            tuple(self.rotation_vertices) or (None,) * len(self.rotations))
         if len(self.rotation_vertices) != len(self.rotations):
             raise ValueError("rotation vertices must align with rotations")
-        if any(len(r.pauli) - 1 != self.n_qubits for r in self.rotations):
-            raise ValueError("rotation and Clifford register sizes differ")
+        if any(q >= self.n_qubits for r in self.rotations for q in r.targets):
+            raise ValueError("rotation targets exceed the Clifford output register")
 
     @property
     def n_qubits(self) -> int:
@@ -429,20 +429,16 @@ class PauliCircuit:
             angle = rotation.angle
             if isinstance(angle, Poly):
                 raise ValueError("bind the Pauli exponential angle before matrix conversion")
-            axes = rotation.pauli[1:]
             pauli = PauliString(
                 self.n_outputs,
-                sum(1 << q for q, axis in enumerate(axes) if axis in "XY"),
-                sum(1 << q for q, axis in enumerate(axes) if axis in "YZ"),
-                -1 if rotation.pauli[0] == "-" else 1,
+                sum(1 << q for q, axis in zip(rotation.targets, rotation.pauli) if axis in "XY"),
+                sum(1 << q for q, axis in zip(rotation.targets, rotation.pauli) if axis in "YZ"),
             )
             # The exact exponential has period four in the angle.
             theta = np.pi * float((angle + 2) % 4 - 2) / 2
             result = np.cos(theta) * result - 1j * np.sin(theta) * (
                 pauli.to_matrix(max_qubits=max_qubits) @ result
             )
-            if rotation.gadget_phase:
-                result *= np.exp(1j * theta * pauli.sign)
         return result
 
 
@@ -631,8 +627,7 @@ def extract_pauli(
         if m.label != "XY" and m.angle == 1
     )
     h_mask = sum(1 << q for q in pattern.output_hadamards)
-    rotations = []
-    rotation_vertices = []
+    rotations: list[tuple[PauliString, Fraction, Any]] = []
     for layer in reversed(layers[1:]):
         for v in layer:
             measurement = pattern.measurements[v]
@@ -651,10 +646,7 @@ def extract_pauli(
             negatives = ((s | measured_odd) & negative_axes).bit_count()
             negative = (edge_count + y_count // 2 + negatives) & 1
             pauli = PauliString(len(pattern.outputs), x, z, -1 if negative else 1)
-            rotations.append(PauliExponential(
-                str(_hadamard(pauli, h_mask)), _phase(-measurement.angle)
-            ))
-            rotation_vertices.append(v)
+            rotations.append((_hadamard(pauli, h_mask), _phase(-measurement.angle), v))
     clifford = _residual_clifford(pattern, positions, adjacency)
     xs, zs = list(clifford.x_images), list(clifford.z_images)
     for q in pattern.input_hadamards:
@@ -666,9 +658,17 @@ def extract_pauli(
     for q, angle in enumerate(pattern.output_phases):
         if angle != 0:
             pauli = _hadamard(PauliString(len(pattern.outputs), 0, 1 << q), h_mask)
-            rotations.append(PauliExponential(str(pauli), angle))
-            rotation_vertices.append(None)
-    return PauliCircuit(clifford, tuple(rotations), pattern.inputs, pattern.outputs, layers,
+            rotations.append((pauli, angle, None))
+    gates = []
+    rotation_vertices = []
+    for pauli, angle, vertex in rotations:
+        targets = tuple(_bits(pauli.x | pauli.z))
+        if not targets:
+            continue  # Identity rotations contribute only to the omitted global scalar.
+        axes = "".join("IXZY"[((pauli.x >> q) & 1) + 2 * ((pauli.z >> q) & 1)] for q in targets)
+        gates.append(PauliExponential(axes, pauli.sign * angle, *targets))
+        rotation_vertices.append(vertex)
+    return PauliCircuit(clifford, tuple(gates), pattern.inputs, pattern.outputs, layers,
                         tuple(rotation_vertices))
 
 

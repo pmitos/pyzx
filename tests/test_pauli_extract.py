@@ -175,8 +175,8 @@ class TestPauliExtract(unittest.TestCase):
         self.assert_same(expected, graph.to_matrix())
         self.assert_same(expected, result.to_matrix())
         self.assert_same(expected, result.to_circuit().to_matrix())
-        self.assertEqual([(str(r.pauli), r.angle) for r in result.rotations],
-                         [("+ZZ", Fraction(1, 3))])
+        self.assertEqual([(r.pauli, r.angle, r.targets) for r in result.rotations],
+                         [("ZZ", Fraction(1, 3), (0, 1))])
         self.assertEqual(result.rotation_vertices, (3,))
         for version in (2, 3):
             with self.subTest(version=version):
@@ -273,8 +273,10 @@ class TestPauliExtract(unittest.TestCase):
                     self.assertIsInstance(result, zx.PauliCircuit)
                     self.assertTrue(result.rotations)
                     self.assertTrue(all(type(r) is PauliExponential for r in result.rotations))
-                    self.assertTrue(all(isinstance(r.pauli, str) and len(r.pauli) == 3
-                                        and not r.gadget_phase for r in result.rotations))
+                    self.assertTrue(all(set(r.pauli) <= set("XYZ")
+                                        and len(r.pauli) == len(r.targets)
+                                        and tuple(sorted(r.targets)) == r.targets
+                                        for r in result.rotations))
                     self.assertEqual(len(result.rotation_vertices), len(result.rotations))
                     self.assertTrue(all(v is None or v in witness[1]
                                         for v in result.rotation_vertices))
@@ -289,41 +291,37 @@ class TestPauliExtract(unittest.TestCase):
                     self.assert_same(circuit.to_matrix(), gates.to_matrix())
                     self.assertEqual(graph.to_json(), original)
 
-    def test_pauli_circuit_uses_gate_phase_conventions(self):
+    def test_pauli_circuit_uses_targeted_exponentials_directly(self):
         clifford = CliffordMap(
             tuple(PauliString(4, 1 << q, 0) for q in range(4)),
             tuple(PauliString(4, 0, 1 << q) for q in range(4)),
         )
-        signed_paulis = (PauliString(4, 5, 12, -1), PauliString(4, 0, 0))
+        signed_paulis = (PauliString(4, 5, 12, -1), PauliString(4, 0, 1))
         angles = (Fraction(9, 4), Fraction(-1, 3))
-        for gadget_phase in (False, True):
-            with self.subTest(gadget_phase=gadget_phase):
-                rotations = tuple(PauliExponential(str(p), a, gadget_phase=gadget_phase)
-                                  for p, a in zip(signed_paulis, angles))
-                result = PauliCircuit(clifford, rotations)
-                expected = np.eye(16, dtype=complex)
-                for pauli, angle in zip(signed_paulis, angles):
-                    theta = np.pi * float(angle) / 2
-                    expected = np.cos(theta) * expected - 1j * np.sin(theta) * pauli.to_matrix() @ expected
-                    if gadget_phase:
-                        expected *= np.exp(1j * theta * pauli.sign)
-                with patch.object(PauliExponential, "to_graph", side_effect=AssertionError("graph conversion")), \
-                     patch.object(PauliExponential, "to_basic_gates", side_effect=AssertionError("gate synthesis")), \
-                     patch.object(CliffordMap, "to_circuit", side_effect=AssertionError("Clifford synthesis")):
-                    np.testing.assert_allclose(result.to_matrix(), expected, atol=1e-12)
-                shifted = tuple(PauliExponential(r.pauli, r.angle + 4 * 10**100,
-                                                 gadget_phase=r.gadget_phase) for r in rotations)
-                np.testing.assert_allclose(PauliCircuit(clifford, shifted).to_matrix(), expected, atol=1e-12)
-                self.assert_same(expected, result.to_circuit().to_matrix())
-                self.assertEqual(result.rotation_vertices, (None, None))
-                with self.assertRaisesRegex(ValueError, "max_qubits"):
-                    result.to_matrix(max_qubits=3)
-        with self.assertRaisesRegex(ValueError, "register sizes"):
-            PauliCircuit(clifford, (PauliExponential("X", Fraction(1, 3)),))
+        rotations = (PauliExponential("YZX", -angles[0], 2, 3, 0),
+                     PauliExponential("Z", angles[1], 0))
+        result = PauliCircuit(clifford, rotations)
+        expected = np.eye(16, dtype=complex)
+        for pauli, angle in zip(signed_paulis, angles):
+            theta = np.pi * float(angle) / 2
+            expected = np.cos(theta) * expected - 1j * np.sin(theta) * pauli.to_matrix() @ expected
+        with patch.object(PauliExponential, "to_graph", side_effect=AssertionError("graph conversion")), \
+             patch.object(PauliExponential, "to_basic_gates", side_effect=AssertionError("gate synthesis")), \
+             patch.object(CliffordMap, "to_circuit", side_effect=AssertionError("Clifford synthesis")):
+            np.testing.assert_allclose(result.to_matrix(), expected, atol=1e-12)
+        shifted = tuple(PauliExponential(r.pauli, r.angle + 4 * 10**100, *r.targets)
+                        for r in rotations)
+        np.testing.assert_allclose(PauliCircuit(clifford, shifted).to_matrix(), expected, atol=1e-12)
+        self.assert_same(expected, result.to_circuit().to_matrix())
+        self.assertEqual(result.rotation_vertices, (None, None))
+        with self.assertRaisesRegex(ValueError, "max_qubits"):
+            result.to_matrix(max_qubits=3)
+        with self.assertRaisesRegex(ValueError, "output register"):
+            PauliCircuit(clifford, (PauliExponential("X", Fraction(1, 3), 4),))
         with self.assertRaisesRegex(ValueError, "vertices must align"):
             PauliCircuit(clifford, rotations, rotation_vertices=(0,))
         with self.assertRaisesRegex(ValueError, "bind the Pauli exponential angle"):
-            PauliCircuit(clifford, (PauliExponential("XIII", new_var("theta", False)),)).to_matrix()
+            PauliCircuit(clifford, (PauliExponential("X", new_var("theta", False), 0),)).to_matrix()
 
     def test_supplied_public_witness_is_reused_without_dense_arithmetic(self):
         circuit = Circuit(2)
@@ -381,7 +379,7 @@ class TestPauliExtract(unittest.TestCase):
         graph.set_edge_type(graph.edge(0, boundary), EdgeType.HADAMARD)
         result = extract_pauli(graph)
         self.assertEqual(result.rotations,
-                         (PauliExponential("I" * 69 + "X", Fraction(1, 7)),))
+                         (PauliExponential("X", Fraction(1, 7), 69),))
         self.assertEqual(result.rotation_vertices, (None,))
 
     def test_long_path_and_empty_graph(self):
@@ -393,6 +391,11 @@ class TestPauliExtract(unittest.TestCase):
         np.testing.assert_array_equal(empty.to_matrix(), [[1]])
         self.assertEqual(empty.to_circuit().qubits, 0)
         self.assertEqual(empty.to_circuit().gates, [])
+        graph = open_graph((Fraction(1, 3), 0, 0), ((0, 1),), (), (2,))
+        scalar_rotation = extract_pauli(graph)
+        self.assertEqual(scalar_rotation.rotations, ())
+        self.assertEqual(scalar_rotation.rotation_vertices, ())
+        self.assert_same(graph.to_matrix(), scalar_rotation.to_matrix())
 
     def test_pauli_flow_without_xy_gflow(self):
         # A Y measurement at the middle of a triangle absorbs the cyclic

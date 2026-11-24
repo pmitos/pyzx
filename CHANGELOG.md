@@ -9,11 +9,14 @@ Hence, occasionally changes will be backwards incompatible (although they will a
 ## [Unreleased]
 
 ### Added
-- `PauliExponential` circuit gate for signed Pauli strings. (by @pmitos)
+- `PauliExponential` circuit gate for Pauli rotations on specified qubits. (by @pmitos)
 - Simmons Pauli-flow extraction via `extract_pauli` and `extract_circuit_pauli`, with reusable focused flow witnesses, a Clifford-isometry/Pauli-exponential intermediate representation, and optional synthesis into elementary circuits. Graph-like diagrams support extra outputs and state preparations. Rotations use `PauliExponential` gates, with source vertices recorded in `rotation_vertices`. (by @pmitos)
 
 ### Fixed
 - `Circuit.adjoint` now adjoints the inner gate of a `ConditionalGate`, so `if(c==1) s q[0];` becomes `if(c==1) sdg q[0];`. (by @anubhavlal07)
+- Corrected scalar evaluation for opposite non-Clifford spider phases by converting pi units to radians in `Scalar.add_spider_pair`.
+- `graph_to_circuit` and `parse_quipper_block` now add `XCX` gates correctly instead of raising `KeyError: 'CX'`, and `"CX"` is registered as an alias for `CNOT` in `gate_types` and exported in `pyzx.circuit`.
+- `Circuit.from_qasm` now reads phases written with the OpenQASM 3 `π` constant, such as `rz(π/4)`, as multiples of π instead of dividing them by π a second time. (by @anubhavlal07)
 
 ## [0.10.8] - 2026-11-01
 

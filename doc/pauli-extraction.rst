@@ -84,13 +84,16 @@ dimensions; ``n_qubits`` denotes the output register size. A state preparation
 has no logical images and is specified entirely by its output stabilizers.
 
 Each rotation is a :class:`~pyzx.circuit.PauliExponential` gate representing
-``exp(-i*pi*angle*P/2)``. Its ``pauli`` attribute is a signed string of
-``I``, ``X``, ``Y`` and ``Z``, with wire zero leftmost, and ``angle`` is in
-units of pi. Extracted gates use the default ``gadget_phase=False`` convention.
+``exp(-i*pi*angle*P/2)``. Its ``pauli`` attribute contains one ``X``, ``Y`` or
+``Z`` per entry in ``targets``, and ``angle`` is in units of pi.
+Extracted targets are in increasing output-wire order. Identity factors are
+omitted, and the sign of the extraction string is absorbed into the angle.
+For example, the signed tensor ``-XIYZ`` at angle ``a`` becomes
+``PauliExponential("XYZ", -a, 0, 2, 3)``. Rotations with empty support contribute
+only to the omitted global scalar and are skipped.
 They can be added directly to an ordinary :class:`~pyzx.circuit.Circuit`.
 Simmons uses a positive imaginary exponent for XY measurements, so the
 extractor negates the XY measurement angle before reducing it modulo two.
-The Pauli retains the sign of the primary extraction string.
 
 Apply the Clifford first, followed by rotations in tuple order.
 ``rotation_vertices`` is an aligned tuple of source vertices, with ``None``
@@ -143,7 +146,7 @@ an input-extended graph.
 
 Pauli supports and stabilizer incidence columns are packed into Python
 integers during extraction. The output rotation supports are converted to
-signed strings when constructing the gates. The incidence columns locate
+axis strings and target tuples when constructing the gates. The incidence columns locate
 the rows affected by each measurement.
 Shared output spiders are separated internally, and a supplied witness is
 extended to account for the added vertices.
