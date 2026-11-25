@@ -30,8 +30,8 @@ mydir = os.path.dirname(__file__)
 from pyzx.generate import cliffordT, cliffords
 from pyzx.simplify import clifford_simp
 from pyzx.extract import extract_circuit
-from pyzx.circuit import Circuit, PhaseGadget
-from pyzx.circuit.gates import ParityPhase, FSim, U2, U3, CU3, CU, CSX
+from pyzx.circuit import Circuit, PauliExponential, PhaseGadget
+from pyzx.circuit.gates import ParityPhase, FSim, U2, U3, CU3, CU, CSX, RZZ, CNOT, ZPhase, XCX, CX
 from pyzx.utils import VertexType, EdgeType
 from fractions import Fraction
 
@@ -91,6 +91,34 @@ class TestCircuit(unittest.TestCase):
                 c.add_gate(gate)
                 c2 = Circuit.from_quipper(c.to_quipper())
                 self.assertTrue(compare_tensors(c.to_matrix(), c2.to_matrix(), preserve_scalar=False))
+
+    def test_xcx_graph_and_quipper_roundtrip(self):
+        # CX is an alias for CNOT
+        self.assertIs(CX, CNOT)
+        c_cx = Circuit(2)
+        c_cx.add_gate("CX", 0, 1)
+        self.assertIsInstance(c_cx.gates[0], CNOT)
+
+        # XCX gate roundtrip
+        c = Circuit(2)
+        c.add_gate("XCX", 0, 1)
+        self.assertIsInstance(c.gates[0], XCX)
+
+        # Graph roundtrip with zh=True preserving XCX gate
+        g = c.to_graph(zh=True)
+        c_from_graph = Circuit.from_graph(g)
+        self.assertEqual(len(c_from_graph.gates), 1)
+        self.assertIsInstance(c_from_graph.gates[0], XCX)
+        self.assertTrue(compare_tensors(c.to_tensor(), c_from_graph.to_tensor(), True))
+
+        # Quipper roundtrip
+        q_str = c.to_quipper()
+        self.assertIn('QGate["X"](1) with controls=[+0]', q_str)
+        c_from_quipper = Circuit.from_quipper(q_str)
+        self.assertEqual(len(c_from_quipper.gates), 1)
+        self.assertIsInstance(c_from_quipper.gates[0], XCX)
+        self.assertEqual(c.gates, c_from_quipper.gates)
+        self.assertTrue(compare_tensors(c.to_tensor(), c_from_quipper.to_tensor(), True))
 
     def test_load_quipper_from_file(self):
         c1 = Circuit.from_quipper_file(os.path.join(mydir,"test_circuit.circuit"))
@@ -224,6 +252,31 @@ class TestCircuit(unittest.TestCase):
                 if not isinstance(gate, (CU3, CU)):
                     self.assertTrue(c.verify_equality(c.copy()))
 
+    def test_adjoint_of_conditional_gate(self):
+        header = 'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[1];\ncreg c[2];\n'
+        cases = [
+            ("s q[0];", "sdg q[0];"),
+            ("sdg q[0];", "s q[0];"),
+            ("t q[0];", "tdg q[0];"),
+            ("rz(pi/4) q[0];", "rz(-0.25*pi) q[0];"),
+        ]
+        for inner, expected in cases:
+            with self.subTest(inner=inner):
+                c = Circuit.from_qasm(header + "if(c==2) " + inner)
+                gate = c.gates[0]
+                before = gate.to_qasm()
+                adj = c.adjoint().gates[0]
+                self.assertEqual(adj.to_qasm(), "if(c==2) " + expected)
+                self.assertEqual(adj.condition_register, gate.condition_register)
+                self.assertEqual(adj.condition_value, gate.condition_value)
+                self.assertEqual(adj.register_size, gate.register_size)
+                self.assertEqual(adj.target, gate.target)
+                self.assertEqual(gate.to_qasm(), before)
+                check = Circuit(1)
+                check.add_gate(gate.inner_gate)
+                check.add_gate(adj.inner_gate)
+                self.assertTrue(compare_tensors(check.to_matrix(), Circuit(1).to_matrix(), preserve_scalar=False))
+
     def test_verify_equality_u3(self):
         header = 'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[1];\n'
         left = Circuit.from_qasm(header + "u3(pi/2,pi/4,-pi/2) q[0];")
@@ -320,15 +373,20 @@ class TestPhaseGadgetGate(unittest.TestCase):
         self.assertTrue(compare_tensors(c.to_tensor(), c2.to_tensor(), False))
 
     def test_gadget_vs_basic_gates_semantics(self):
-        # ParityPhase with as_gadget=True and as_gadget=False should have the same semantics.
-        c_gadget = Circuit(3)
-        c_gadget.add_gate(ParityPhase(Fraction(1, 4), 0, 1, 2, as_gadget=True))
+        # ParityPhase with as_gadget=True and as_gadget=False should have the exact same semantics including scalar.
+        for k in (1, 2, 3, 4):
+            for phase in (0, Fraction(1, 4), Fraction(1, 2), Fraction(3, 4), 1):
+                c_gadget = Circuit(k)
+                c_gadget.add_gate(ParityPhase(phase, *range(k), as_gadget=True))
 
-        c_basic = Circuit(3)
-        c_basic.add_gate(ParityPhase(Fraction(1, 4), 0, 1, 2, as_gadget=False))
+                c_basic = Circuit(k)
+                c_basic.add_gate(ParityPhase(phase, *range(k), as_gadget=False))
 
-        # The tensors should be equivalent.
-        self.assertTrue(compare_tensors(c_gadget.to_tensor(), c_basic.to_tensor(), False))
+                # Tensors must match with scalar preserved.
+                self.assertTrue(compare_tensors(c_gadget.to_tensor(), c_basic.to_tensor(), True))
+                # The gate must be strictly unitary.
+                m = c_gadget.to_matrix()
+                self.assertTrue(np.allclose(m @ m.conj().T, np.eye(2**k)))
 
     def test_parity_phase_copy_preserves_as_gadget(self):
         pp = ParityPhase(Fraction(1, 4), 0, 1, 2, as_gadget=True)
@@ -341,6 +399,162 @@ class TestPhaseGadgetGate(unittest.TestCase):
         pp2_copy = pp2.copy()
         self.assertFalse(pp2_copy.as_gadget)
 
+    def test_phase_gadget_copy(self):
+        pg = PhaseGadget(Fraction(1, 4), 0, 1, 2)
+        pg_copy = pg.copy()
+        self.assertIsInstance(pg_copy, PhaseGadget)
+        self.assertEqual(pg_copy.phase, Fraction(1, 4))
+        self.assertEqual(pg_copy.targets, (0, 1, 2))
+        self.assertTrue(pg_copy.as_gadget)
+
+    def test_phase_gadget_circuit_operations(self):
+        c = Circuit(3)
+        c.add_gate(PhaseGadget(Fraction(1, 4), 0, 1, 2))
+        c_copy = c.copy()
+        self.assertEqual(len(c_copy.gates), 1)
+        self.assertIsInstance(c_copy.gates[0], PhaseGadget)
+        self.assertTrue(c_copy.gates[0].as_gadget)
+
+        c_adj = c.adjoint()
+        self.assertEqual(len(c_adj.gates), 1)
+        self.assertEqual(c_adj.gates[0].phase, -Fraction(1, 4))
+        self.assertTrue(c_adj.gates[0].as_gadget)
+
+        c_tensor = c @ c
+        self.assertEqual(c_tensor.qubits, 6)
+        self.assertEqual(c_tensor.gates[1].targets, (3, 4, 5))
+
+    def test_phase_gadget_export(self):
+        c = Circuit(3)
+        c.add_gate(PhaseGadget(Fraction(1, 4), 0, 1, 2))
+        qasm = c.to_qasm()
+        self.assertNotIn("undefined", qasm)
+        self.assertIn("cx q[0], q[1];", qasm)
+        self.assertIn("rz(0.25*pi) q[2];", qasm)
+        self.assertNotIn("undefined", c.to_qc())
+        self.assertNotIn("undefined", c.to_quipper())
+
+    def test_phase_gadget_to_basic_gates(self):
+        pg = PhaseGadget(Fraction(1, 4), 0, 1)
+        bg = pg.to_basic_gates()
+        self.assertEqual(bg, [CNOT(0, 1), ZPhase(1, Fraction(1, 4)), CNOT(0, 1)])
+        for b in bg:
+            self.assertEqual(b.to_basic_gates(), [b])
+
+        c = Circuit(3)
+        c.add_gate(PhaseGadget(Fraction(1, 4), 0, 1, 2))
+        c_basic = c.to_basic_gates()
+        self.assertEqual(len(c_basic.gates), 5)  # 2 CNOTs + 1 ZPhase + 2 CNOTs
+        self.assertFalse(any(isinstance(g, ParityPhase) for g in c_basic.gates))
+        self.assertTrue(compare_tensors(c.to_tensor(), c_basic.to_tensor(), True))
+
+        # preserve_gadgets=True retains the PhaseGadget
+        c_pres = c.to_basic_gates(preserve_gadgets=True)
+        self.assertEqual(len(c_pres.gates), 1)
+        self.assertIsInstance(c_pres.gates[0], PhaseGadget)
+
+        # to_graph() still creates the native phase gadget structure in ZX-graph
+        g = c.to_graph()
+        leaf_candidates = [v for v in g.vertices()
+                           if g.type(v) == VertexType.Z
+                           and g.phase(v) == Fraction(1, 4)
+                           and g.vertex_degree(v) == 1]
+        self.assertEqual(len(leaf_candidates), 1)
+        hub = list(g.neighbors(leaf_candidates[0]))[0]
+        self.assertTrue(g.is_phase_gadget(hub))
+
+    def test_rzz_gate_operations(self):
+        rzz = RZZ(0, 1, Fraction(1, 4))
+        rzz_copy = rzz.copy()
+        self.assertIsInstance(rzz_copy, RZZ)
+        self.assertEqual(rzz_copy.control, 0)
+        self.assertEqual(rzz_copy.target, 1)
+        self.assertEqual(rzz_copy.targets, (0, 1))
+        self.assertEqual(rzz_copy.phase, Fraction(1, 4))
+
+        rzz_adj = rzz.to_adjoint()
+        self.assertEqual(rzz_adj.phase, -Fraction(1, 4))
+        self.assertEqual(rzz_adj.control, 0)
+        self.assertEqual(rzz_adj.target, 1)
+
+    def test_rzz_reposition(self):
+        rzz = RZZ(0, 1, Fraction(1, 4))
+        rzz_rep = rzz.reposition([2, 3])
+        self.assertEqual(rzz_rep.control, 2)
+        self.assertEqual(rzz_rep.target, 3)
+        self.assertEqual(rzz_rep.targets, (2, 3))
+        # Original should be unchanged
+        self.assertEqual(rzz.control, 0)
+        self.assertEqual(rzz.target, 1)
+        self.assertEqual(rzz.targets, (0, 1))
+        self.assertIn("q[2], q[3]", rzz_rep.to_qasm())
+
+    def test_rzz_circuit_operations(self):
+        c = Circuit(2)
+        c.add_gate(RZZ(0, 1, Fraction(1, 4)))
+        c_copy = c.copy()
+        self.assertEqual(c_copy.gates[0], c.gates[0])
+
+        c_adj = c.adjoint()
+        self.assertEqual(c_adj.gates[0].phase, -Fraction(1, 4))
+
+        c_tens = c @ c
+        self.assertEqual(c_tens.qubits, 4)
+        self.assertEqual(c_tens.gates[1].control, 2)
+        self.assertEqual(c_tens.gates[1].target, 3)
+
+    def test_parity_phase_rzz_equality(self):
+        rzz = RZZ(0, 1, Fraction(1, 4))
+        pp = ParityPhase(Fraction(1, 4), 0, 1)
+        pg = PhaseGadget(Fraction(1, 4), 0, 1)
+        self.assertNotEqual(rzz, pp)
+        self.assertNotEqual(rzz, pg)
+        self.assertNotEqual(pp, pg)
+        self.assertEqual(pg, ParityPhase(Fraction(1, 4), 0, 1, as_gadget=True))
+        self.assertEqual(ParityPhase(Fraction(1, 4), 0, 1, as_gadget=True), pg)
+        self.assertEqual(RZZ(0, 1, Fraction(1, 4)), RZZ(1, 0, Fraction(1, 4)))
+
+    def test_parity_phase_validation(self):
+        with self.assertRaises(ValueError):
+            ParityPhase(Fraction(1, 4))
+        with self.assertRaises(ValueError):
+            ParityPhase(Fraction(1, 4), 0, 0)
+        with self.assertRaises(ValueError):
+            RZZ(1, 1, Fraction(1, 4))
+
+    def test_qasm_roundtrip_semantic_equivalence(self):
+        c_pg = Circuit(3)
+        c_pg.add_gate(PhaseGadget(Fraction(1, 4), 0, 1, 2))
+        c_pg_rt = Circuit.from_qasm(c_pg.to_qasm())
+        self.assertTrue(compare_tensors(c_pg.to_tensor(), c_pg_rt.to_tensor(), True))
+
+        c_rzz = Circuit(2)
+        c_rzz.add_gate(RZZ(0, 1, Fraction(1, 4)))
+        c_rzz_rt = Circuit.from_qasm(c_rzz.to_qasm())
+        self.assertTrue(compare_tensors(c_rzz.to_tensor(), c_rzz_rt.to_tensor(), False))
+
+    def test_rzz_reposition_non_identity(self):
+        rzz = RZZ(0, 1, Fraction(1, 4))
+        rzz_rep = rzz.reposition([2, 0])
+        self.assertEqual(rzz_rep.control, 2)
+        self.assertEqual(rzz_rep.target, 0)
+        self.assertEqual(rzz_rep.targets, (2, 0))
+        self.assertEqual(rzz_rep.targets, (rzz_rep.control, rzz_rep.target))
+
+    def test_phase_gadget_copy_to_graph_structure(self):
+        pg = PhaseGadget(Fraction(1, 4), 0, 1, 2)
+        pg_copy = pg.copy()
+        c = Circuit(3)
+        c.add_gate(pg_copy)
+        g = c.to_graph()
+        leaf_candidates = [v for v in g.vertices()
+                           if g.type(v) == VertexType.Z
+                           and g.phase(v) == Fraction(1, 4)
+                           and g.vertex_degree(v) == 1]
+        self.assertEqual(len(leaf_candidates), 1)
+        hub = list(g.neighbors(leaf_candidates[0]))[0]
+        self.assertTrue(g.is_phase_gadget(hub))
+
     def test_fsim_reposition(self):
         g = FSim(0, 1, Fraction(1, 2), Fraction(1, 4))
         g2 = g.reposition([2, 3, 0, 1])
@@ -350,5 +564,102 @@ class TestPhaseGadgetGate(unittest.TestCase):
         self.assertEqual(g.control, 0)
         self.assertEqual(g.target, 1)
 
+
+@unittest.skipUnless(np, "numpy needs to be installed for this to run")
+class TestPauliExponential(unittest.TestCase):
+    def test_mixed_axis_graph_and_adjoint(self):
+        angle = -Fraction(9, 4)
+        x = np.array([[0, 1], [1, 0]])
+        y = np.array([[0, -1j], [1j, 0]])
+        z = np.diag([1, -1])
+        pauli = np.kron(np.kron(x, np.eye(2)), np.kron(y, z))
+        theta = np.pi * float(angle) / 2
+        expected = np.cos(theta) * np.eye(16) - 1j * np.sin(theta) * pauli
+
+        circuit = Circuit(4)
+        circuit.add_gate("PauliExponential", ["X", "Y", "Z"], angle, 0, 2, 3)
+        graph = circuit.to_graph()
+        gadget_degrees = [graph.vertex_degree(v) for v in graph.vertices() if graph.is_phase_gadget(v)]
+        self.assertEqual(gadget_degrees, [4])
+        np.testing.assert_allclose(graph.to_matrix(), expected, atol=1e-12)
+        np.testing.assert_allclose(circuit.adjoint().to_matrix(), expected.conj().T, atol=1e-12)
+        self.assertEqual(circuit.tcount(), 1)
+
+        remapped = Circuit(4)
+        remapped.add_circuit(circuit, mask=[3, 2, 0, 1])
+        self.assertEqual(remapped.gates, [PauliExponential("XYZ", angle, 3, 0, 1)])
+
+        prefix = Circuit(1)
+        prefix.add_gate("HAD", 0)
+        tensored = prefix @ circuit
+        self.assertEqual(tensored.gates[-1], PauliExponential("XYZ", angle, 1, 3, 4))
+        np.testing.assert_allclose(tensored.to_matrix(), np.kron(prefix.to_matrix(), expected), atol=1e-12)
+
+    def test_all_z_scalar_relative_to_parity_gates(self):
+        for angle, tcount in ((Fraction(-1, 2), 0), (Fraction(1, 4), 1)):
+            rotation = PauliExponential("ZZ", angle, 0, 2)
+            expected = np.exp(1j * np.pi * float(angle) / 2) * rotation.to_graph().to_matrix()
+            self.assertEqual(rotation.tcount(), tcount)
+            for gate_class in (ParityPhase, PhaseGadget):
+                with self.subTest(angle=angle, gate_class=gate_class):
+                    circuit = Circuit(3)
+                    circuit.add_gate(gate_class(angle, 0, 2))
+                    np.testing.assert_allclose(circuit.to_matrix(), expected, atol=1e-12)
+
+    def test_basic_gates_and_exports_up_to_global_phase(self):
+        for pauli, angle in (("XY", Fraction(-1, 4)), ("ZZ", Fraction(0))):
+            with self.subTest(pauli=pauli, angle=angle):
+                circuit = Circuit(2)
+                gate = PauliExponential(pauli, angle, 0, 1)
+                circuit.add_gate(gate)
+                expected = circuit.to_matrix()
+                quipper = circuit.to_quipper()
+                self.assertIn('QRot["exp(-i%Z)",', quipper)
+                if angle == 0:
+                    self.assertEqual(gate.to_basic_gates(), PhaseGadget(angle, 0, 1).to_basic_gates())
+                for alternative in (
+                    circuit.to_basic_gates(),
+                    Circuit.from_qasm(circuit.to_qasm()),
+                    Circuit.from_qasm(circuit.to_qasm(version=3)),
+                    Circuit.from_qc(circuit.to_qc()),
+                    Circuit.from_quipper(quipper),
+                ):
+                    actual = alternative.to_matrix()
+                    phase = np.vdot(expected, actual) / len(expected)
+                    self.assertAlmostEqual(abs(phase), 1)
+                    np.testing.assert_allclose(actual, phase * expected, atol=1e-12)
+
+    def test_symbolic_angle_and_scalar(self):
+        from pyzx.symbolic import new_var
+
+        angle = new_var("theta", is_bool=False)
+        graph = PauliExponential("Y", angle, 0).to_graph()
+        bound = graph.substitute_variables({"theta": Fraction(1)})
+        np.testing.assert_allclose(bound.to_matrix(), [[0, -1], [1, 0]], atol=1e-12)
+
+    def test_text_export_rejects_unbound_angle(self):
+        from pyzx.symbolic import new_var
+
+        angle = new_var("theta", is_bool=False) / 2
+        circuit = Circuit(2)
+        circuit.add_gate(PauliExponential("ZZ", angle, 0, 1))
+        for export in (circuit.to_qasm, circuit.to_qc, circuit.to_quipper):
+            with self.subTest(export=export.__name__):
+                with self.assertRaisesRegex(TypeError, "bind the Pauli exponential angle"):
+                    export()
+
+    def test_rejects_invalid_paulis_and_targets(self):
+        cases = (("I", [0]), ("-X", [0, 1]), (["XY"], [0]), ("ZZ", [0]),
+                 ("ZZ", [0, 0]), ("Z", [-1]), ("Z", [0.5]), ("", []))
+        for pauli, targets in cases:
+            with self.subTest(pauli=pauli, targets=targets), self.assertRaises(ValueError):
+                PauliExponential(pauli, Fraction(1, 3), *targets)
+        gate = PauliExponential("ZY", Fraction(1, 3), 0, 1)
+        for mask in ([0, 0], [0, -1]):
+            with self.subTest(mask=mask), self.assertRaises(ValueError):
+                gate.reposition(mask)
+
+
 if __name__ == '__main__':
     unittest.main()
+

@@ -24,15 +24,15 @@ from ..graph.base import BaseGraph
 from ..tensor import TensorStrategy
 from ..utils import EdgeType
 from .gates import (CCZ, CHAD, CNOT, CRX, CRY, CRZ, CSWAP, CSX, CU, CU3, CY,
-                    CZ, HAD, NOT, RXX, RZZ, SWAP, SX, U2, U3, XCX,
+                    CZ, HAD, NOT, RXX, RZZ, SWAP, SX, U2, U3, XCX, CX,
                     ConditionalGate, CPhase, FSim, Gate, Measurement,
-                    ParityPhase, PhaseGadget, S, T, Tofolli, XPhase, Y, YPhase,
+                    ParityPhase, PauliExponential, PhaseGadget, S, T, Tofolli, XPhase, Y, YPhase,
                     Z, ZPhase, gate_types)
 
 __all__ = [
     'Gate', 'gate_types', 'NOT', 'Y', 'Z', 'HAD', 'XPhase', 'YPhase', 'ZPhase', 'U2', 'U3', 'S', 'T', 'SX', 'SWAP', 'RXX', 'RZZ', 'CNOT',
-    'CY', 'CZ', 'CHAD', 'CSX', 'XCX', 'CRX', 'CRY', 'CRZ', 'CPhase', 'CU3', 'CU', 'CSWAP', 'Tofolli', 'CCZ', 'ParityPhase', 'FSim',
-    'Measurement', 'PhaseGadget', 'ConditionalGate',
+    'CY', 'CZ', 'CHAD', 'CSX', 'XCX', 'CX', 'CRX', 'CRY', 'CRZ', 'CPhase', 'CU3', 'CU', 'CSWAP', 'Tofolli', 'CCZ', 'ParityPhase', 'FSim',
+    'Measurement', 'PauliExponential', 'PhaseGadget', 'ConditionalGate',
     
     'Circuit', 'CircuitLike', 'id'
 ]
@@ -228,12 +228,15 @@ class Circuit:
         c.gates.extend([g.reposition(mask, bit_mask) for g in other.gates])
         return c
 
-    def to_basic_gates(self) -> 'Circuit':
+    def to_basic_gates(self, preserve_gadgets: bool = False) -> 'Circuit':
         """Returns a new circuit with every gate expanded in terms of X/Z phases, Hadamards
         and the 2-qubit gates CNOT, CZ, CX."""
         c = Circuit(self.qubits, name=self.name, bit_amount=self.bits)
         for g in self.gates:
-            c.gates.extend(g.to_basic_gates())
+            if preserve_gadgets and getattr(g, "as_gadget", False):
+                c.gates.append(g.copy())
+            else:
+                c.gates.extend(g.to_basic_gates())
         return c
 
     def split_phase_gates(self) -> 'Circuit':
@@ -321,7 +324,7 @@ class Circuit:
         from .graphparser import circuit_to_graph
 
         return circuit_to_graph(
-            self if zh else self.to_basic_gates(),
+            self if zh else self.to_basic_gates(preserve_gadgets=True),
             compress_rows,
             backend,
             initialize_qubits=self._initialize_qubits,
@@ -381,9 +384,7 @@ class Circuit:
 
     @staticmethod
     def from_qsim_file(fname: str) -> 'Circuit':
-        """Produces a :class:`Circuit` based on a .qc description of a circuit.
-        If a Toffoli gate with more than 2 controls is encountered, ancilla qubits are added.
-        Currently up to 5 controls are supported."""
+        """Produces a :class:`Circuit` based on a .qsim description of a circuit."""
         from .qsimparser import parse_qsim
         with open(fname, 'r') as f:
             data = f.read()
@@ -423,14 +424,14 @@ class Circuit:
             return quipper_center_block(fname)
 
     @staticmethod
-    def from_qasm(s: str) -> 'Circuit':
+    def from_qasm(s: str, strict: bool = True) -> 'Circuit':
         """Produces a :class:`Circuit` based on a QASM input string.
         Supports OpenQASM 2 and 3, including ``reset``, ``measure``,
         and ``if`` (classical control / feedforward) statements.
         It currently doesn't support custom gates that have parameters."""
         from .qasmparser import QASMParser
         p = QASMParser()
-        return p.parse(s)
+        return p.parse(s, strict=strict)
 
     @staticmethod
     def from_qasm_file(fname: str) -> 'Circuit':
