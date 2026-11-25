@@ -9,6 +9,7 @@ Hence, occasionally changes will be backwards incompatible (although they will a
 ## [Unreleased]
 
 ### Added
+- Signed Pauli strings and Clifford unitary/isometry tableaux, with basic circuit-to-tableau conversion and reference symplectic-elimination synthesis. (by @pmitos)
 - `PauliExponential` circuit gate for Pauli rotations on specified qubits. (by @pmitos)
 
 ### Fixed

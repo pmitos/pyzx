@@ -35,6 +35,17 @@ Circuit API
    :members:
 
 
+Clifford tableaux
+----------------
+
+See :doc:`tableaus` for conventions, supported circuit conversions and the
+limitations of the reference synthesis.
+
+.. automodule:: pyzx.tableau
+   :members: PauliString, CliffordMap, CliffordMapError
+   :member-order: bysource
+
+
 Flow finding
 ------------
 
